@@ -193,17 +193,24 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                     services[sname]["severity"] = "Normal"
                     services[sname]["status"] = "HEALTHY"
 
+            # 檢查是否存在活體總結報告 summary.md
+            summary_path = os.path.join(sub_path, "summary.md")
+            services[sname]["has_summary"] = os.path.exists(summary_path)
+
             # 讀取該微服務專屬之生命週期追蹤檔 (issue_state.json)
             state_file = os.path.join(sub_path, "issue_state.json")
             new_cnt = 0
             chronic_cnt = 0
+            ack_cnt = 0
             max_days = 0
             if os.path.exists(state_file):
                 try:
                     with open(state_file, "r", encoding="utf-8") as sf:
                         s_data = json.load(sf)
                     for fp, it in s_data.get("issues", {}).items():
-                        if it.get("status") in ("new", "ongoing") and it.get("last_seen_date") == today_date_str:
+                        if it.get("status") == "acknowledged" or it.get("is_acknowledged"):
+                            ack_cnt += 1
+                        elif it.get("status") in ("new", "ongoing") and it.get("last_seen_date") == today_date_str:
                             c_days = it.get("consecutive_days", 1)
                             if c_days > 1:
                                 chronic_cnt += 1
@@ -214,6 +221,7 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                     pass
             services[sname]["new_issues_count"] = new_cnt
             services[sname]["chronic_issues_count"] = chronic_cnt
+            services[sname]["acknowledged_issues_count"] = ack_cnt
             services[sname]["max_consecutive_days"] = max_days
 
     # 3. 若有指定 target_env，依據該環境在 ES 的真實錯誤動態重算專案狀態
@@ -296,7 +304,9 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             status_text = "ALL HEALTHY"
 
         # 2. 底部操作按鈕 (高度一致、左右均衡)
-        if s.get("latest_report_file"):
+        if s.get("has_summary"):
+            report_btn = f'''<a href="/report/{s['service_name']}/summary.md" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm active:scale-95">📋 專案活體總結</a>'''
+        elif s.get("latest_report_file"):
             if s.get("is_today_report"):
                 report_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm active:scale-95">🚨 查看今日診斷</a>'''
             else:
@@ -420,16 +430,23 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
         # 探測器連結自動帶入當前所選環境及近 7 天時間範圍
         logs_env_param = f"&environment={current_env}" if current_env else ""
         explorer_url = f"/logs?service={s['service_name']}{logs_env_param}&time_range=7d"
-        weekly_url = f"/weekly?service={s['service_name']}"
 
-        # 生命週期標籤 (新問題 vs 連續頑疾)
+        # 生命週期標籤 (新問題 vs 連續頑疾 vs 已知技術債)
         life_badges = []
         if s.get("new_issues_count", 0) > 0:
             life_badges.append(f'<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700">🆕 {s["new_issues_count"]} 新問題</span>')
         if s.get("chronic_issues_count", 0) > 0:
             max_d = s.get("max_consecutive_days", 2)
             life_badges.append(f'<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800" title="連續多日重複出現未修復">⏳ {s["chronic_issues_count"]} 連續頑疾 ({max_d}天)</span>')
+        if s.get("acknowledged_issues_count", 0) > 0:
+            life_badges.append(f'<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200" title="已標記已知待排期，Email 靜音中">👁️ {s["acknowledged_issues_count"]} 已知暫緩</span>')
         lifecycle_badges_html = f'<div class="flex items-center gap-1 mt-1.5 flex-wrap">{" ".join(life_badges)}</div>' if life_badges else ""
+
+        # 每日歷史快照按鈕
+        if s.get("latest_report_file"):
+            snapshot_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs"><span>📄 每日快照</span></a>'''
+        else:
+            snapshot_btn = f'''<span class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><span>📄 暫無快照</span></span>'''
 
         cards_html += f'''
         <div class="bg-white border border-slate-200/90 hover:border-slate-300 rounded-2xl p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between">
@@ -507,9 +524,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-2">
-                    <a href="{weekly_url}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 transition border border-indigo-200 shadow-2xs">
-                        <span>📅 每週週報</span>
-                    </a>
+                    {snapshot_btn}
                     <a href="{explorer_url}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs">
                         <span>🔍 即時日誌</span>
                     </a>
@@ -652,10 +667,6 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                 <a href="/logs" class="px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition flex items-center gap-1.5 whitespace-nowrap">
                     <span>🔍</span>
                     <span>日誌探測</span>
-                </a>
-                <a href="/weekly" class="px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition flex items-center gap-1.5 whitespace-nowrap">
-                    <span>📅</span>
-                    <span>每週週報</span>
                 </a>
             </nav>
             
@@ -1294,6 +1305,47 @@ def render_report_view_html(service_name: str, filename: str, md_content: str) -
             }}
         }});
         document.getElementById('content').innerHTML = marked.parse(rawMd);
+
+        async function acknowledgeIssue(serviceName, fingerprint) {{
+            const note = prompt("請輸入已知備註（選填，例如：Q4重構再處理、慢查詢已建索引）：", "已知問題，暫緩處理");
+            if (note === null) return;
+            try {{
+                const res = await fetch('/api/issues/acknowledge', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{service_name: serviceName, fingerprint: fingerprint, note: note}})
+                }});
+                const data = await res.json();
+                if (data.status === 'ok') {{
+                    alert('✅ ' + data.message);
+                    window.location.reload();
+                }} else {{
+                    alert('❌ 標記失敗: ' + (data.message || '未知錯誤'));
+                }}
+            }} catch (e) {{
+                alert('❌ 請求失敗: ' + e);
+            }}
+        }}
+
+        async function unacknowledgeIssue(serviceName, fingerprint) {{
+            if (!confirm("確定要將此問題恢復為正常告警追蹤嗎？")) return;
+            try {{
+                const res = await fetch('/api/issues/unacknowledge', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{service_name: serviceName, fingerprint: fingerprint}})
+                }});
+                const data = await res.json();
+                if (data.status === 'ok') {{
+                    alert('✅ ' + data.message);
+                    window.location.reload();
+                }} else {{
+                    alert('❌ 恢復失敗: ' + (data.message || '未知錯誤'));
+                }}
+            }} catch (e) {{
+                alert('❌ 請求失敗: ' + e);
+            }}
+        }}
     </script>
 </body>
 </html>'''
@@ -1351,10 +1403,6 @@ def render_log_explorer_html(projects_cfg: dict, default_service: str = "", defa
                 <a href="/logs" class="px-3 py-1.5 rounded-lg bg-white text-indigo-700 shadow-2xs flex items-center gap-1.5 whitespace-nowrap">
                     <span>🔍</span>
                     <span>日誌探測</span>
-                </a>
-                <a href="/weekly" class="px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition flex items-center gap-1.5 whitespace-nowrap">
-                    <span>📅</span>
-                    <span>每週週報</span>
                 </a>
             </nav>
 
@@ -1875,289 +1923,6 @@ def render_log_explorer_html(projects_cfg: dict, default_service: str = "", defa
             // 立即發動探測查詢！
             queryLogs();
         }});
-    </script>
-</body>
-</html>'''
-
-
-def render_weekly_dashboard_html(
-    weekly_index: dict,
-    current_service: str = "",
-    current_week: str = "",
-    md_content: str = "",
-    projects_cfg: dict = None,
-    default_email: str = ""
-) -> str:
-    """
-    渲染 SRE Sentinel 每週總分析與營運週報中心頁面
-    支援：
-    1. 專案獨立切換 (全域總控週報 vs 各微服務專案專屬週報)
-    2. 歷次週次快速下拉與歷史溯源
-    3. 隨選手動「⚡ 立即生成」與即時 Markdown 渲染呈現
-    """
-    from core.report_generator import get_current_week_str
-    cfg = projects_cfg or {}
-    
-    # 決定當前選取的週次
-    available_weeks = weekly_index.get("weeks", [])
-    if not current_week:
-        current_week = available_weeks[0] if available_weeks else get_current_week_str()
-
-    # 1. 產生專案切換標籤 (Project Tabs)
-    tabs_html = []
-    
-    # (A) 各微服務專案獨立 Tab (優先擺在最前面，專案完全獨立隔開)
-    for sname in cfg.keys():
-        is_active = (current_service == sname)
-        p_cls = "bg-indigo-600 text-white shadow-sm" if is_active else "bg-white hover:bg-slate-100 text-slate-700 border border-slate-200"
-        tabs_html.append(f'''
-        <a href="/weekly?service={sname}&week={current_week}" class="px-3.5 py-1.5 text-xs font-bold rounded-xl transition flex items-center gap-1.5 whitespace-nowrap {p_cls}">
-            <span>📦</span>
-            <span>{sname} (獨立週報)</span>
-        </a>
-        ''')
-
-    # (B) 跨服務架構總覽 Tab (放在最後，僅供宏觀跨服務相依性參考)
-    global_active = not current_service
-    g_cls = "bg-indigo-600 text-white shadow-sm" if global_active else "bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200"
-    tabs_html.append(f'''
-    <a href="/weekly?service=&week={current_week}" title="包含全系統微服務故障排行與跨服務相依性分析" class="px-3.5 py-1.5 text-xs font-medium rounded-xl transition flex items-center gap-1.5 whitespace-nowrap {g_cls}">
-        <span>🌐</span>
-        <span>跨服務總覽 (全部)</span>
-    </a>
-    ''')
-    tabs_rendered = "\n".join(tabs_html)
-
-    # 2. 週次選擇下拉選單
-    week_options = []
-    if available_weeks:
-        for w in available_weeks:
-            sel = "selected" if w == current_week else ""
-            week_options.append(f'<option value="{w}" {sel}>📅 {w} 週報</option>')
-    else:
-        week_options.append(f'<option value="{current_week}" selected>📅 {current_week} 週報 (本週)</option>')
-    week_options_rendered = "\n".join(week_options)
-
-    # 3. 目標專案顯示名稱與通報對象
-    if current_service:
-        target_display = f"微服務專案：[{current_service}]"
-        proj_conf = cfg.get(current_service, {})
-        target_email = proj_conf.get("notification_emails") or default_email or "未設定"
-    else:
-        target_display = "全微服務系統總體營運健康週報"
-        target_email = default_email or "未設定"
-
-    escaped_md = json.dumps(md_content) if md_content else '""'
-    has_report = bool(md_content and md_content.strip())
-
-    if has_report:
-        report_content_html = '<div id="content" class="markdown-body bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 shadow-sm leading-relaxed"></div>'
-    else:
-        report_content_html = f'''
-        <div class="bg-white border border-dashed border-slate-300 rounded-2xl p-12 text-center shadow-sm">
-            <div class="text-5xl mb-3">📅</div>
-            <h3 class="text-base font-bold text-slate-800">尚未生成【{target_display}】在【{current_week}】的每週總分析</h3>
-            <p class="text-xs text-slate-500 mt-2 mb-5 max-w-md mx-auto leading-relaxed">
-                SRE AI Sentinel 將會回溯過去 7 天（168 小時）的所有日誌、環境分佈與歷史每日工單，為你自動產出一份包含巨觀趨勢與架構優化建議的週報。
-            </p>
-            <button onclick="triggerWeeklyGeneration('{current_service}')" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition active:scale-95">
-                <span>⚡ 立即生成這份週度報告</span>
-            </button>
-        </div>
-        '''
-
-    return f'''<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SRE Sentinel - 每週總分析與營運週報中心</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.0/github-markdown.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <style>
-        body {{
-            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background-color: #f8fafc;
-        }}
-        .font-mono {{ font-family: 'JetBrains Mono', monospace; }}
-        .markdown-body {{
-            background-color: transparent !important;
-            font-family: inherit;
-        }}
-        .markdown-body pre {{
-            background-color: #0f172a !important;
-            border-radius: 0.75rem;
-            border: 1px solid #1e293b;
-        }}
-        .markdown-body table {{
-            display: table !important;
-            width: 100% !important;
-        }}
-    </style>
-</head>
-<body class="text-slate-800 min-h-screen flex flex-col bg-slate-50 selection:bg-indigo-600 selection:text-white">
-    <!-- 頂部導覽列 (單行緊湊乾淨) -->
-    <header class="border-b border-slate-200 bg-white/95 backdrop-blur-md sticky top-0 z-50 shadow-xs">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-            <div class="flex items-center gap-3 flex-shrink-0">
-                <a href="/" class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shadow-md shadow-indigo-600/20 text-white text-lg font-black hover:opacity-95 transition">
-                    Ω
-                </a>
-                <div>
-                    <h1 class="text-sm sm:text-base font-bold text-slate-900 leading-none">SRE AI Sentinel</h1>
-                    <span class="hidden md:inline text-[11px] text-slate-500 font-medium">每週總分析與營運週報中心</span>
-                </div>
-            </div>
-
-            <!-- 分頁導航切換 (緊湊單行) -->
-            <nav class="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-semibold flex-shrink-0">
-                <a href="/" class="px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition flex items-center gap-1.5 whitespace-nowrap">
-                    <span>📊</span>
-                    <span>儀表板</span>
-                </a>
-                <a href="/logs" class="px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition flex items-center gap-1.5 whitespace-nowrap">
-                    <span>🔍</span>
-                    <span>日誌探測</span>
-                </a>
-                <a href="/weekly" class="px-3 py-1.5 rounded-lg bg-white text-indigo-700 shadow-2xs flex items-center gap-1.5 whitespace-nowrap">
-                    <span>📅</span>
-                    <span>每週週報</span>
-                </a>
-            </nav>
-
-            <!-- 右側：動作按鈕組 -->
-            <div class="flex items-center gap-2 flex-shrink-0">
-                <button id="genWeeklyBtn" onclick="triggerWeeklyGeneration('{current_service}')" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition shadow-sm active:scale-95 whitespace-nowrap">
-                    <span id="genSpinner" class="hidden">⏳</span>
-                    <span id="genText">⚡ 生成本週週報</span>
-                </button>
-                <a href="/" class="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition border border-slate-200 whitespace-nowrap">
-                    ⬅️ 返回儀表板
-                </a>
-            </div>
-        </div>
-    </header>
-
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
-        <!-- 1. 專案切換標籤列 (支援全域與各專案獨立切換) -->
-        <div class="mb-5 bg-white border border-slate-200 rounded-2xl p-3 shadow-2xs flex items-center justify-between flex-wrap gap-3">
-            <div class="flex items-center gap-2 flex-wrap">
-                <span class="text-xs font-bold text-slate-500 uppercase tracking-wider pl-2 pr-1">週報維度：</span>
-                {tabs_rendered}
-            </div>
-            <div class="text-xs text-slate-500 pr-2 flex items-center gap-1.5">
-                <span>📧 本報告通報信箱：</span>
-                <span class="font-mono font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">{target_email}</span>
-            </div>
-        </div>
-
-        <!-- 2. 控制欄 (週次選擇器、當前狀態與操作按鈕) -->
-        <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-                <div class="flex items-center gap-2">
-                    <span class="text-xl">📅</span>
-                    <h2 class="text-base font-bold text-slate-900">{target_display}</h2>
-                    <span class="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-indigo-100 text-indigo-700 border border-indigo-200">{current_week}</span>
-                </div>
-                <p class="text-xs text-slate-500 mt-1">彙整過去 7 天全域日誌數據、每日故障切片與架構因果分析。</p>
-            </div>
-
-            <div class="flex items-center gap-3 w-full sm:w-auto justify-end flex-wrap">
-                <div class="flex items-center gap-2">
-                    <label class="text-xs font-bold text-slate-600 whitespace-nowrap">切換歷史週次：</label>
-                    <select id="weekSelector" onchange="onWeekChange(this.value)" class="text-xs px-3 py-1.5 border border-slate-300 rounded-lg bg-slate-50 font-mono font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                        {week_options_rendered}
-                    </select>
-                </div>
-                <button onclick="window.print()" class="px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 text-slate-700 rounded-lg border border-slate-200 transition shadow-2xs">
-                    🖨️ 列印週報
-                </button>
-                <button onclick="copyWeeklyMarkdown()" class="px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 text-indigo-700 rounded-lg border border-slate-200 transition shadow-2xs">
-                    📋 複製 Markdown
-                </button>
-            </div>
-        </div>
-
-        <!-- 3. 週報內容呈現區塊 -->
-        <div id="reportContainer">
-            {report_content_html}
-        </div>
-    </main>
-
-    <footer class="border-t border-slate-200 py-6 text-center text-xs text-slate-400 bg-white">
-        SRE AI Sentinel &bull; Weekly Holistic SRE Observability & Governance
-    </footer>
-
-    <script>
-        const currentService = "{current_service}";
-        const currentWeek = "{current_week}";
-        const rawMd = {escaped_md};
-
-        // 渲染 Markdown
-        if (rawMd && rawMd.trim()) {{
-            marked.setOptions({{
-                highlight: function(code, lang) {{
-                    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-                    return hljs.highlight(code, {{ language }}).value;
-                }}
-            }});
-            document.getElementById('content').innerHTML = marked.parse(rawMd);
-        }}
-
-        function onWeekChange(selectedWeek) {{
-            let url = '/weekly?week=' + encodeURIComponent(selectedWeek);
-            if (currentService) {{
-                url += '&service=' + encodeURIComponent(currentService);
-            }}
-            window.location.href = url;
-        }}
-
-        async function triggerWeeklyGeneration(serviceName) {{
-            const btn = document.getElementById('genWeeklyBtn');
-            const spinner = document.getElementById('genSpinner');
-            const text = document.getElementById('genText');
-            if (btn) btn.disabled = true;
-            if (spinner) spinner.classList.remove('hidden');
-            if (text) text.innerText = '正在聚合 7 天日誌並由 AI 分析週報中...';
-
-            try {{
-                const url = serviceName ? ('/api/weekly/generate?service_name=' + encodeURIComponent(serviceName)) : '/api/weekly/generate';
-                const res = await fetch(url, {{ method: 'POST' }});
-                const data = await res.json();
-                if (data.status === 'ok') {{
-                    let targetUrl = '/weekly?week=' + encodeURIComponent(currentWeek);
-                    if (serviceName) targetUrl += '&service=' + encodeURIComponent(serviceName);
-                    window.location.href = targetUrl;
-                }} else {{
-                    alert('⚠️ 週報生成失敗: ' + (data.message || '未知錯誤'));
-                    if (btn) btn.disabled = false;
-                    if (spinner) spinner.classList.add('hidden');
-                    if (text) text.innerText = '⚡ 生成本週週報';
-                }}
-            }} catch (err) {{
-                alert('❌ 呼叫週報生成失敗: ' + err);
-                if (btn) btn.disabled = false;
-                if (spinner) spinner.classList.add('hidden');
-                if (text) text.innerText = '⚡ 生成本週週報';
-            }}
-        }}
-
-        function copyWeeklyMarkdown() {{
-            if (!rawMd) {{
-                alert('⚠️ 目前尚無週報內容可供複製！');
-                return;
-            }}
-            navigator.clipboard.writeText(rawMd).then(() => {{
-                alert('✅ 已成功將本篇週報 Markdown 完整複製到剪貼簿！');
-            }}).catch(err => {{
-                alert('❌ 複製失敗: ' + err);
-            }});
-        }}
     </script>
 </body>
 </html>'''

@@ -7,17 +7,17 @@
       "error_location": "unknown:0",
       "error_type": "AES Decryption Failed for both new (CBC) and legacy (ECB) modes.",
       "first_seen_date": "2026-10-16",
-      "last_seen_date": "2026-10-17",
-      "consecutive_days": 2,
-      "today_count": 6,
+      "last_seen_date": "2026-10-19",
+      "consecutive_days": 1,
+      "today_count": 12,
       "yesterday_count": 6,
-      "total_occurrences": 96,
-      "status": "resolved",
+      "total_occurrences": 108,
+      "status": "new",
       "cached_analysis": {
         "severity": "High",
-        "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-17)",
-        "root_cause_summary": "經分析，系統目前面臨兩大核心問題的連鎖效應：1. 【資料庫效能瓶頸】：大量 Slow query (最高達 8539ms) 顯示資料庫層級存在嚴重的索引缺失或全表掃描問題，這會導致應用層 Thread Pool 耗盡，進而引發連鎖性的請求堆積與超時。2. 【加密解密邏輯失效】：AES Decryption Failed (ID: 10) 發生 6 次，這通常與金鑰管理 (Key Management) 或加密模式 (CBC/ECB) 的遷移不一致有關。若解密失敗導致資料無法正確讀取，可能會觸發異常的重試機制或錯誤的資料庫查詢邏輯，進一步加劇 Slow query 的發生。兩者共同作用，極可能導致系統在處理敏感加密資料時，因解密失敗後的錯誤處理路徑（Error Path）觸發了低效的資料庫查詢，形成惡性循環。",
-        "coordinated_fix_plan": "修復策略應採取『先穩定資料存取，再修復加密邏輯』的順序。首先透過優化資料庫索引與查詢邏輯來降低延遲，釋放系統資源；接著修復 AES 解密模組，確保加密金鑰與模式的向下相容性。具體建議：針對 Slow query，需定位出錯的 SQL 並建立對應的 B-Tree 索引；針對 AES 錯誤，需檢查解密函式中是否正確處理了 Legacy ECB 模式的 Padding 與 IV 參數。"
+        "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "0c0f72f806fc": {
@@ -2980,8 +2980,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "71600be425b4": {
@@ -2999,8 +2999,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "2aafcda97bfd": {
@@ -3018,8 +3018,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "4cb4ce450e85": {
@@ -3037,8 +3037,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "2477d6c42796": {
@@ -3056,8 +3056,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "0cfea46209d2": {
@@ -3075,8 +3075,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "11c22c086c8a": {
@@ -3094,8 +3094,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "9571f543c228": {
@@ -3113,8 +3113,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "719d131eabc4": {
@@ -3132,8 +3132,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "264115860750": {
@@ -3151,8 +3151,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "2349183c2376": {
@@ -3170,8 +3170,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "7dd45cf94bf9": {
@@ -3189,8 +3189,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "66f2073fadf4": {
@@ -3208,8 +3208,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "8919f8cd84f9": {
@@ -3227,8 +3227,8 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     },
     "a59fef128832": {
@@ -3246,10 +3246,67 @@
       "cached_analysis": {
         "severity": "High",
         "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
-        "root_cause_summary": "經分析，所有 15 項錯誤日誌均指向同一類型的性能瓶頸：'Slow query found'。雖然日誌中未直接顯示具體的 SQL 語句或檔案路徑（顯示為 unknown:0），但從查詢時間的分布規律可以觀察到明顯的『群聚效應』：ID 1-6 的耗時穩定在 1270ms-1290ms 之間，ID 9-13 的耗時則飆升至 2250ms 左右。這種高度一致的延遲特徵表明這並非隨機的網路抖動，而是系統性的資料庫層級問題。根本原因推測為：1. 缺乏索引（Missing Indexes）導致全表掃描（Full Table Scan）；2. 存在 N+1 查詢問題，導致在循環中頻繁觸發資料庫 IO；3. 或是某些高頻使用的聚合查詢（Aggregation）未進行緩存優化。由於所有錯誤均為 Slow Query，這會導致資料庫連接池（Connection Pool）迅速耗盡，進而引發微服務整體的響應延遲與連鎖崩潰。",
-        "coordinated_fix_plan": "由於目前缺乏具體的檔案路徑，修復策略必須採取『從資料庫層到應用層』的聯動優化。首先，需透過資料庫慢查詢日誌（Slow Query Log）定位具體的 SQL 語句；其次，針對應用程式中觸發這些查詢的 Repository 或 Service 層進行代碼級優化。具體建議：1. 在資料庫層針對高頻過濾欄位（如 user_id, status, created_at）建立複合索引；2. 在應用程式層檢查 ORM 使用情況，將 N+1 查詢改為 Eager Loading（預加載）；3. 引入 Redis 緩存機制，減少對熱點資料的重複查詢。"
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
+      }
+    },
+    "0131df8fe92a": {
+      "fingerprint": "0131df8fe92a",
+      "service_name": "isocialwork",
+      "error_location": "unknown:0",
+      "error_type": "Failed to get suicide risk data.",
+      "first_seen_date": "2026-10-19",
+      "last_seen_date": "2026-10-19",
+      "consecutive_days": 1,
+      "today_count": 4,
+      "yesterday_count": 0,
+      "total_occurrences": 4,
+      "status": "new",
+      "cached_analysis": {
+        "severity": "High",
+        "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
+      }
+    },
+    "c49ee91e49dc": {
+      "fingerprint": "c49ee91e49dc",
+      "service_name": "isocialwork",
+      "error_location": "unknown:0",
+      "error_type": "Slow query found (time: 114.52ms)",
+      "first_seen_date": "2026-10-19",
+      "last_seen_date": "2026-10-19",
+      "consecutive_days": 1,
+      "today_count": 1,
+      "yesterday_count": 0,
+      "total_occurrences": 1,
+      "status": "new",
+      "cached_analysis": {
+        "severity": "High",
+        "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
+      }
+    },
+    "b1624cd4c52e": {
+      "fingerprint": "b1624cd4c52e",
+      "service_name": "isocialwork",
+      "error_location": "unknown:0",
+      "error_type": "Slow query found (time: 102.28ms)",
+      "first_seen_date": "2026-10-19",
+      "last_seen_date": "2026-10-19",
+      "consecutive_days": 1,
+      "today_count": 1,
+      "yesterday_count": 0,
+      "total_occurrences": 1,
+      "status": "new",
+      "cached_analysis": {
+        "severity": "High",
+        "title": "[SRE-Daily] isocialwork 異常全景診斷與協同修復工單 (2026-10-19)",
+        "root_cause_summary": "經全域因果分析，系統目前正處於『資料層效能崩潰』引發的連鎖反應中。根本原因（Root Cause）在於大量 Slow Queries（ID 3-17，耗時最高達 2257ms）導致資料庫連接池（Connection Pool）長時間佔用與 I/O 等待。這進一步導致了：1. 業務邏輯層因 Timeout 或資料讀取不完整，觸發了 suicide risk data 獲取失敗（ID 1）；2. 由於資料庫讀取延遲或資料不一致，導致解密模組在處理從資料庫撈取的加密字串時，因讀取到殘缺或錯誤的封包，引發 AES 解密失敗（ID 2，發生次數最高，達 12 次）。這是一個典型的從『資料庫效能瓶頸』擴散至『應用層邏輯錯誤』與『安全性模組異常』的連鎖故障。",
+        "coordinated_fix_plan": "修復策略必須採取『由底向上』的同步修復模式。首先必須優化資料庫查詢效能以釋放資源，接著修正解密邏輯的容錯性，最後強化業務邏輯的重試機制。具體建議：1. 針對 Slow Query 進行索引優化（Indexing）或查詢重構；2. 在解密模組中增加對資料完整性的 Pre-check；3. 在 Suicide Risk 服務中引入 Exponential Backoff 重試機制。"
       }
     }
   },
-  "last_updated": "2026-10-19 02:15:12"
+  "last_updated": "2026-10-19 11:10:52"
 }

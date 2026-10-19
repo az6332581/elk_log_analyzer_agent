@@ -116,9 +116,18 @@ class IssueLifecycleTracker:
                 item["total_occurrences"] = item.get("total_occurrences", 0) + (count_today if last_seen != today_str else 0)
                 item["last_seen_date"] = today_str
                 item["consecutive_days"] = consecutive_days
-                item["status"] = "ongoing" if consecutive_days > 1 else "new"
+                item.setdefault("daily_history", {})[today_str] = today_occurrences
 
-                if consecutive_days > 1:
+                # 若已被工程師標記為已知待處理，維持 acknowledged 狀態
+                if item.get("status") == "acknowledged":
+                    item["is_acknowledged"] = True
+                else:
+                    item["status"] = "ongoing" if consecutive_days > 1 else "new"
+                    item["is_acknowledged"] = False
+
+                if item.get("status") == "acknowledged":
+                    pass # 不計入需緊急通報的 new 或 ongoing
+                elif consecutive_days > 1:
                     ongoing_issues_count += 1
                 else:
                     new_issues_count += 1
@@ -141,19 +150,24 @@ class IssueLifecycleTracker:
                     "yesterday_count": 0,
                     "total_occurrences": count_today,
                     "status": "new",
-                    "cached_analysis": None
+                    "is_acknowledged": False,
+                    "cached_analysis": None,
+                    "daily_history": {today_str: count_today}
                 }
                 new_issues_count += 1
                 max_consecutive_days = max(max_consecutive_days, 1)
 
             # 將生命週期資訊直接灌入該項 error 物件，供後續報告與分析使用
+            target_item = saved_issues[fp]
             err["fingerprint"] = fp
-            err["status"] = saved_issues[fp]["status"]
-            err["is_new"] = (saved_issues[fp]["status"] == "new")
-            err["is_ongoing"] = (saved_issues[fp]["status"] == "ongoing")
-            err["consecutive_days"] = saved_issues[fp]["consecutive_days"]
-            err["total_occurrences"] = saved_issues[fp]["total_occurrences"]
-            err["cached_analysis"] = saved_issues[fp].get("cached_analysis")
+            err["status"] = target_item["status"]
+            err["is_new"] = (target_item["status"] == "new")
+            err["is_ongoing"] = (target_item["status"] == "ongoing")
+            err["is_acknowledged"] = (target_item.get("status") == "acknowledged")
+            err["acknowledge_note"] = target_item.get("acknowledge_note", "")
+            err["consecutive_days"] = target_item["consecutive_days"]
+            err["total_occurrences"] = target_item["total_occurrences"]
+            err["cached_analysis"] = target_item.get("cached_analysis")
 
         # 標記那些今天沒出現的歷史問題 (可能已被修復)
         for fp, item in saved_issues.items():
@@ -181,13 +195,38 @@ class IssueLifecycleTracker:
         }
         return summary
 
+    def acknowledge_issue(self, service_name: str, fingerprint: str, note: str = "") -> bool:
+        """將特定異常指紋標記為已知待排期 (acknowledged)，啟動告警靜音"""
+        state = self.load_state(service_name)
+        saved = state.get("issues", {})
+        if fingerprint in saved:
+            saved[fingerprint]["status"] = "acknowledged"
+            saved[fingerprint]["is_acknowledged"] = True
+            saved[fingerprint]["acknowledge_note"] = note or "工程師已確認知情，暫緩處理"
+            saved[fingerprint]["acknowledged_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return self.save_state(service_name, state)
+        return False
+
+    def unacknowledge_issue(self, service_name: str, fingerprint: str) -> bool:
+        """取消已知標記，恢復正常警報與追蹤"""
+        state = self.load_state(service_name)
+        saved = state.get("issues", {})
+        if fingerprint in saved:
+            consecutive = saved[fingerprint].get("consecutive_days", 1)
+            saved[fingerprint]["status"] = "ongoing" if consecutive > 1 else "new"
+            saved[fingerprint]["is_acknowledged"] = False
+            saved[fingerprint].pop("acknowledge_note", None)
+            saved[fingerprint].pop("acknowledged_at", None)
+            return self.save_state(service_name, state)
+        return False
+
     def update_cached_analysis(self, service_name: str, ai_analysis: Dict[str, Any]) -> None:
         """儲存或更新 LLM 生成的修復建議快取"""
         state = self.load_state(service_name)
         saved = state.get("issues", {})
         # 為當前所有開啟的問題寫入快取
         for fp, item in saved.items():
-            if item.get("status") in ("new", "ongoing"):
+            if item.get("status") in ("new", "ongoing", "acknowledged"):
                 item["cached_analysis"] = {
                     "severity": ai_analysis.get("severity"),
                     "title": ai_analysis.get("title"),
@@ -207,7 +246,7 @@ class IssueLifecycleTracker:
         1. 若包含新問題 (new_count > 0) ➡️ 發送 (🚨 發現全新異常)
         2. 若錯誤量暴增 3 倍以上 (is_escalated) ➡️ 發送 (⚠️ 異常急劇惡化)
         3. 若錯誤出現在正式環境 (has_prod_error) 且為首次或惡化 ➡️ 發送
-        4. 其餘均為已知的持續頑疾 (ongoing) 且未惡化 ➡️ 自動靜音 (🔕 降噪略過)
+        4. 其餘均為已知的持續頑疾 (ongoing) 或已標記已知 (acknowledged) ➡️ 自動靜音 (🔕 降噪略過)
         """
         new_cnt = lifecycle_summary.get("new_count", 0)
         is_esc = lifecycle_summary.get("is_escalated", False)
@@ -226,8 +265,8 @@ class IssueLifecycleTracker:
         if has_prod_error and tot_today > tot_yest and tot_yest > 0:
             return True, f"正式環境 (production) 異常次數持續攀升（今日 {tot_today} 次，昨日 {tot_yest} 次）"
 
-        # 4. 全部為已知舊問題且平穩
-        return False, f"所有 {lifecycle_summary.get('chronic_count', 0)} 個問題均為已追蹤之連續頑疾且無急劇惡化，自動啟動 Email 靜音保護"
+        # 4. 全部為已知舊問題或已標記已知
+        return False, f"所有 {lifecycle_summary.get('chronic_count', 0)} 個問題均為已追蹤之頑疾或已知技術債，自動啟動 Email 靜音保護"
 
 
 # 全域單例

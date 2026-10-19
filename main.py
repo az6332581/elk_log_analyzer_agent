@@ -20,17 +20,13 @@ from fastapi.responses import HTMLResponse
 from core.report_generator import (
     save_or_update_master_report,
     update_reports_index_dashboard,
-    get_current_week_str,
-    save_project_weekly_report,
-    save_global_weekly_report,
-    list_all_weekly_reports
+    update_project_summary
 )
 from core.web_dashboard import (
     get_services_health,
     render_dashboard_html,
     render_report_view_html,
-    render_log_explorer_html,
-    render_weekly_dashboard_html
+    render_log_explorer_html
 )
 from core.repo_manager import (
     sync_repo,
@@ -201,84 +197,7 @@ def send_alert_notification(service_name: str, task_info: dict, report_url: str 
         except Exception as e:
             print(f"⚠️ 推送 Webhook 告警失敗: {e}")
 
-def send_weekly_email_notification(target_title: str, service_name: str, ai_analysis: dict, report_url: str = None) -> bool:
-    """
-    發送每週 SRE 營運綜整週報通知郵件
-    - 若 service_name 存在，優先寄給該專案之 notification_emails
-    - 若為全域週報，寄送至全域 EMAIL_RECEIVER
-    """
-    if not (SMTP_USER and SMTP_PASSWORD):
-        return False
-        
-    proj_conf = get_project_config(service_name) if service_name else {}
-    target_emails = proj_conf.get("notification_emails") if proj_conf else None
-    if not target_emails:
-        target_emails = EMAIL_RECEIVER
-        
-    if not target_emails:
-        return False
-        
-    try:
-        recipients = [e.strip() for e in re.split(r"[,;，；]", target_emails) if e.strip()]
-        if not recipients:
-            return False
-            
-        severity = ai_analysis.get("severity", "Normal")
-        summary = ai_analysis.get("trend_summary") or ai_analysis.get("executive_summary") or "本週系統營運綜整完成。"
-        
-        badge_bg = "#ffe4e6" if severity in ("Critical", "High") else ("#fef3c7" if severity in ("Warning", "Medium") else "#d1fae5")
-        badge_color = "#e11d48" if severity in ("Critical", "High") else ("#d97706" if severity in ("Warning", "Medium") else "#059669")
-        
-        url_btn = f'''
-        <div style="margin-top: 24px; text-align: center;">
-            <a href="{report_url}" style="background-color: #4f46e5; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
-                👉 點此前往週報中心查看完整分析
-            </a>
-        </div>
-        ''' if report_url else ""
-        
-        html_body = f"""
-        <html>
-            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc; padding: 24px; color: #1e293b;">
-                <div style="max-width: 680px; margin: 0 auto; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; padding: 32px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-                    <div style="border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 24px;">
-                        <span style="background: {badge_bg}; color: {badge_color}; font-weight: 700; font-size: 11px; padding: 4px 12px; border-radius: 9999px; letter-spacing: 0.5px;">{severity.upper()}</span>
-                        <h2 style="color: #0f172a; margin: 12px 0 6px 0; font-size: 20px;">📅 {target_title}</h2>
-                        <p style="color: #64748b; font-size: 13px; margin: 0;">出刊時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)</p>
-                    </div>
-                    
-                    <div style="margin-bottom: 20px;">
-                        <h4 style="color: #334155; margin: 0 0 8px 0; font-size: 14px;">📊 本週營運與穩定度走勢摘要：</h4>
-                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 10px; font-size: 13px; color: #1e293b; line-height: 1.6;">
-                            {summary}
-                        </div>
-                    </div>
-                    {url_btn}
-                    <div style="margin-top: 32px; border-top: 1px solid #e2e8f0; padding-top: 16px; text-align: center; color: #94a3b8; font-size: 12px;">
-                        SRE AI Sentinel Observability Platform &bull; Weekly Report Service
-                    </div>
-                </div>
-            </body>
-        </html>
-        """
-        msg = MIMEText(html_body, "html", "utf-8")
-        msg["Subject"] = Header(f"📅 [SRE 週報] {target_title}", "utf-8")
-        msg["From"] = SMTP_USER
-        msg["To"] = ", ".join(recipients)
-        
-        if SMTP_PORT == 465:
-            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=12)
-        else:
-            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=12)
-            server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, recipients, msg.as_string())
-        server.quit()
-        print(f"📧 成功發送週報郵件至 {recipients}")
-        return True
-    except Exception as e:
-        print(f"⚠️ 發送週報郵件失敗: {e}")
-        return False
+
 
 # ============================================================================
 # FastAPI 內嵌伺服器邏輯
@@ -612,78 +531,48 @@ async def api_delete_project(service_name: str):
     return {"status": "error", "message": f"找不到專案 [{service_name}] 或移除失敗"}
 
 
-@app.get("/weekly", response_class=HTMLResponse)
-async def weekly_dashboard_page(
-    service: str = Query(None, description="微服務名稱 (留空為全域週報)"),
-    week: str = Query(None, description="指定週次 (例如 2026_W42)")
-):
-    """
-    SRE AI Sentinel 每週總分析與營運週報中心頁面
-    支援切換全域總控週報與各微服務專案專屬週報
-    """
-    reports_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
-    weekly_idx = list_all_weekly_reports(reports_base_dir)
-    projects_cfg = load_projects_config()
-    
-    target_week = week or (weekly_idx["weeks"][0] if weekly_idx.get("weeks") else get_current_week_str())
-    
-    # 預設優先進入第一個微服務專案獨立週報，避免所有專案混在一起的大雜燴總表
-    project_keys = list(projects_cfg.keys())
-    if not service and project_keys:
-        target_service = project_keys[0]
-    else:
-        target_service = service or ""
-    
-    # 讀取指定週報 Markdown
-    md_content = ""
-    if target_service:
-        fpath = os.path.join(reports_base_dir, target_service, f"weekly_{target_week}.md")
-    else:
-        fpath = os.path.join(reports_base_dir, "weekly", f"weekly_{target_week}.md")
-        
-    if os.path.exists(fpath):
-        try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                md_content = f.read()
-        except Exception as e:
-            print(f"⚠️ 讀取週報 Markdown 失敗: {e}")
-            
-    return render_weekly_dashboard_html(
-        weekly_index=weekly_idx,
-        current_service=target_service,
-        current_week=target_week,
-        md_content=md_content,
-        projects_cfg=projects_cfg,
-        default_email=EMAIL_RECEIVER or ""
-    )
+class AcknowledgeRequest(BaseModel):
+    service_name: str
+    fingerprint: str
+    note: str = ""
 
+@app.post("/api/issues/acknowledge")
+async def api_acknowledge_issue(req: AcknowledgeRequest):
+    """
+    一鍵標記特定錯誤指紋為已知待排期 / 暫不處理：
+    1. 狀態變更為 acknowledged
+    2. 自動啟動 Email 靜音保護，不再寄信騷擾負責人
+    3. 歸入 summary.md 的專案暫緩技術債清單
+    """
+    sname = req.service_name.strip()
+    fp = req.fingerprint.strip()
+    note = req.note.strip()
+    if not sname or not fp:
+        return {"status": "error", "message": "微服務專案名稱與指紋不可為空"}
+    
+    ok = issue_tracker.acknowledge_issue(sname, fp, note=note)
+    if ok:
+        reports_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+        update_project_summary(service_name=sname, aggregated_errors=[], ai_analysis={}, base_dir=reports_base_dir)
+        return {"status": "ok", "message": f"問題 [{fp}] 已成功標記為已知待排期，後續 Email 告警已自動靜音！"}
+    return {"status": "error", "message": f"找不到指定問題指紋 [{fp}]"}
 
-@app.post("/api/weekly/generate")
-async def api_generate_weekly(
-    service_name: str = Query(None, description="指定專案名稱，留空則全域產生"),
-    week: str = Query(None, description="指定週次 (如 2026_W42)")
-):
+@app.post("/api/issues/unacknowledge")
+async def api_unacknowledge_issue(req: AcknowledgeRequest):
     """
-    手動觸發週報生成：
-    - 若指定 service_name：只生成該微服務專案的專屬週報並寄信
-    - 若未指定 service_name：批次生成全域總控週報與所有專案週報
+    取消已知標記，恢復正常警報與追蹤
     """
-    reports_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
-    w_str = week or get_current_week_str()
-    loop = asyncio.get_event_loop()
-    try:
-        if service_name and service_name.strip():
-            sname = service_name.strip()
-            await loop.run_in_executor(None, generate_project_weekly_report, sname, w_str, reports_base_dir, True)
-            return {"status": "ok", "message": f"專案 [{sname}] 的第 {w_str} 週報已成功生成！"}
-        else:
-            projects_cfg = load_projects_config()
-            for sname in projects_cfg.keys():
-                await loop.run_in_executor(None, generate_project_weekly_report, sname, w_str, reports_base_dir, True)
-            await loop.run_in_executor(None, generate_global_weekly_report, w_str, reports_base_dir, True)
-            return {"status": "ok", "message": f"全域總控與所有微服務的第 {w_str} 週報已全數批次生成完成！"}
-    except Exception as e:
-        return {"status": "error", "message": f"週報生成失敗: {e}"}
+    sname = req.service_name.strip()
+    fp = req.fingerprint.strip()
+    if not sname or not fp:
+        return {"status": "error", "message": "微服務專案名稱與指紋不可為空"}
+    
+    ok = issue_tracker.unacknowledge_issue(sname, fp)
+    if ok:
+        reports_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+        update_project_summary(service_name=sname, aggregated_errors=[], ai_analysis={}, base_dir=reports_base_dir)
+        return {"status": "ok", "message": f"問題 [{fp}] 已恢復正常告警追蹤！"}
+    return {"status": "error", "message": f"找不到指定問題指紋 [{fp}]"}
 
 
 def fetch_recent_logs(hours: int = 24, level: str = "ERROR", index_name: str = None) -> list[dict]:
@@ -1239,24 +1128,63 @@ def match_log_to_service(log: dict, projects_cfg: dict) -> str:
 
     return extract_service_name(log)
 
+def normalize_error_signature(text: str) -> str:
+    """
+    高精度保守正規化：
+    針對動態跳動數值（如耗時毫秒、IP、UUID、數字ID）進行標準化遮罩，
+    同時嚴格保留英文單詞語意（如 Slow query found, AES Decryption Failed 等），
+    避免將 102 筆因微小時間差切碎成 102 個獨立問題。
+    """
+    if not text:
+        return ""
+    # 1. 替換時間/時長：time: 187.04ms -> time: <duration>
+    s = re.sub(r"time:\s*\d+(\.\d+)?\s*(ms|s|sec)?", "time: <duration>", text, flags=re.IGNORECASE)
+    s = re.sub(r"\b\d+(\.\d+)?\s*(ms|s|sec)\b", "<duration>", s, flags=re.IGNORECASE)
+    # 2. 替換 IP 位址：192.168.1.1 -> <ip>
+    s = re.sub(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "<ip>", s)
+    # 3. 替換 UUID
+    s = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "<uuid>", s)
+    # 4. 替換 5 位數以上的純數字 ID（如訂單號、流水號）
+    s = re.sub(r"\b\d{5,}\b", "<id>", s)
+    return s.strip()
+
 def aggregate_errors(logs: list[dict]) -> list[dict]:
     """
-    對 Error Log 進行聚類去重，合併相同 (error_location, error_type)。
+    對 Error Log 進行高精度聚類去重：
+    1. 錨定 error_location（檔案:行號）為物理隔離
+    2. 提取 error_type 並進行正規化遮罩
+    3. 若無 error_type 或為通用 Exception，取 error_message 首行骨架簽名
+    4. 依 (location, signature) 聚類，並保留首筆未遮罩之原始 Log 作為展示樣例
     """
     aggregated = {}
     for log in logs:
         location = str(log.get("error_location") or "unknown:0").strip()
-        err_type = str(log.get("error_type") or "unknown_type").strip()
-        key = (location, err_type)
+        raw_type = str(log.get("error_type") or "").strip()
+        raw_msg = str(log.get("error_message") or "").strip()
         
-        err_msg = str(log.get("error_message") or "")
+        # 決定錯誤特徵簽名
+        norm_type = normalize_error_signature(raw_type)
+        first_line_msg = raw_msg.split("\n")[0].strip() if raw_msg else ""
+        norm_msg_sig = normalize_error_signature(first_line_msg)
+        
+        # 判斷 type 是否有效（非空且非通用 Unknown）
+        if norm_type and norm_type.lower() not in ("unknown", "unknown_type", "error", "exception"):
+            signature = norm_type
+        elif norm_msg_sig:
+            signature = norm_msg_sig
+        else:
+            signature = "UnknownError"
+            
+        key = (location, signature)
         err_stack = str(log.get("error_stack") or "")[:800]
         
         if key not in aggregated:
             aggregated[key] = {
                 "error_location": location,
-                "error_type": err_type,
-                "error_message": err_msg,
+                "error_type": signature,
+                "raw_error_type": raw_type or signature,
+                "error_signature": signature,
+                "error_message": raw_msg,
                 "role": str(log.get("role") or "N/A"),
                 "count": 1,
                 "sample_input": log.get("inputs", {}) if isinstance(log.get("inputs"), dict) else {},
@@ -1523,333 +1451,7 @@ def sync_master_report_to_gitlab(report_file_path: str, task_info: dict, project
             print(f"❌ 呼叫 GitLab 建立 Issue 失敗: {e}")
 
 
-# ============================================================================
-# SRE 每週總體分析大腦與報告生成模組 (Weekly Holistic Analysis)
-# ============================================================================
 
-def aggregate_project_weekly_data(service_name: str, hours: int = 168, base_dir: str = "reports") -> dict:
-    """
-    聚合特定微服務專案在過去 7 天（168 小時）內的日誌數據、環境分佈與歷史每日診斷
-    """
-    projects_cfg = load_projects_config()
-    logs_raw = fetch_recent_logs(hours=hours, level="ERROR")
-    matched_logs = [l for l in logs_raw if match_log_to_service(l, projects_cfg) == service_name]
-    
-    # 1. 每日錯誤走勢統計
-    daily_breakdown = {}
-    env_breakdown = {}
-    for l in matched_logs:
-        ts = l.get("@timestamp") or l.get("timestamp") or ""
-        day_str = ts[:10] if len(ts) >= 10 else "unknown"
-        daily_breakdown[day_str] = daily_breakdown.get(day_str, 0) + 1
-        
-        env_val = l.get("environment") or l.get("env") or (l.get("service", {}).get("environment") if isinstance(l.get("service"), dict) else None) or "production"
-        env_breakdown[str(env_val).lower()] = env_breakdown.get(str(env_val).lower(), 0) + 1
-
-    # 2. 錯誤聚類與切片
-    aggregated = aggregate_errors(matched_logs)
-    
-    # 3. 讀取該專案過去 7 天的每日歷史診斷紀錄
-    daily_summaries = []
-    proj_dir = os.path.join(base_dir, service_name)
-    if os.path.exists(proj_dir):
-        for f in sorted(os.listdir(proj_dir), reverse=True):
-            if f.startswith("report_") and f.endswith(".md"):
-                fpath = os.path.join(proj_dir, f)
-                try:
-                    with open(fpath, "r", encoding="utf-8") as rf:
-                        content = rf.read(1200)
-                    sev_m = re.search(r"\*\*整體嚴重度\*\*：\*\*(.*?)\*\*", content)
-                    sev = sev_m.group(1).strip() if sev_m else "High"
-                    title_m = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
-                    title = title_m.group(1).strip() if title_m else f
-                    daily_summaries.append(f"- 報告檔案 {f}: 【嚴重度: {sev}】 {title[:80]}")
-                except Exception:
-                    pass
-                if len(daily_summaries) >= 7:
-                    break
-
-    return {
-        "service_name": service_name,
-        "total_errors": len(matched_logs),
-        "distinct_issues_count": len(aggregated),
-        "daily_breakdown": daily_breakdown,
-        "env_breakdown": env_breakdown,
-        "aggregated_errors": aggregated[:15],
-        "daily_summaries": daily_summaries
-    }
-
-def analyze_project_weekly_holistically(service_name: str, stats: dict, week_str: str) -> dict:
-    """
-    調用 LLM 大腦針對單一專案進行一週宏觀趨勢、頑疾識別與架構調優分析
-    """
-    print(f"🧠 正在請求 SRE AI 大腦 ({LLM_MODEL}) 對專案 [{service_name}] 進行第 {week_str} 週總分析...")
-    
-    err_samples = []
-    for idx, e in enumerate(stats.get("aggregated_errors", []), 1):
-        loc = e.get("error_location", "unknown:0")
-        stack = e.get("error_stack_sample", "") or ""
-        snippet = ""
-        if ":" in loc:
-            parts = loc.split(":")
-            fp = parts[0].strip()
-            try:
-                ln = int(parts[1])
-                snippet = fetch_code_snippet(service_name, fp, ln, window=10, stack_trace=stack)
-            except Exception:
-                pass
-        err_samples.append({
-            "id": idx,
-            "location": loc,
-            "type": e.get("error_type"),
-            "count_7d": e.get("count", 1),
-            "message": e.get("error_message"),
-            "code_snippet": snippet[:400] if snippet else "無原始碼切片"
-        })
-        
-    errors_str = json.dumps(err_samples, ensure_ascii=False, indent=2)
-    daily_hist_str = "\n".join(stats.get("daily_summaries", [])) if stats.get("daily_summaries") else "本週無每日歷史診斷存檔。"
-
-    prompt = f"""你是一位資深 SRE 系統運維架構師。
-當前檢視的微服務專案為：【{service_name}】。
-我們剛完成過去 7 天（168 小時）的運維全量指標聚合，以下為第 {week_str} 週的專案數據：
-
-【過去 7 天核心指標】
-- 7 天累計異常日誌數：{stats.get("total_errors", 0)} 次
-- 獨立問題項目數：{stats.get("distinct_issues_count", 0)} 個
-- 每日錯誤分佈：{json.dumps(stats.get("daily_breakdown", {}), ensure_ascii=False)}
-- 運行環境分佈：{json.dumps(stats.get("env_breakdown", {}), ensure_ascii=False)}
-
-【過去 7 天高頻問題聚類與代碼切片】
-```json
-{errors_str}
-```
-
-【過去一週每日診斷工單存檔】
-{daily_hist_str}
-
-請針對這 7 天的數據進行深度宏觀綜合評估，產出一份具備技術治理深度的每週 SRE 營運綜整報告。
-請嚴格輸出符合以下 JSON 格式的內容（直接輸出純 JSON，不要夾帶任何其他文字）：
-{{
-  "title": "[SRE-Weekly] {service_name} 週度營運穩定度與架構綜整報告 ({week_str})",
-  "severity": "Normal / Warning / Critical",
-  "trend_summary": "深入分析過去一週系統的穩定度走勢、波峰波谷發生時間點與環境穩定度差異總結。",
-  "recurring_issues": [
-    {{
-      "location": "app/services/xxx.py:120",
-      "description": "說明此錯誤在過去一週反覆出現的規律與根本原因",
-      "impact": "對業務交易或系統可用性的實質衝擊"
-    }}
-  ],
-  "action_items": [
-    "1. 下週優先架構調優動作（例如加強連線池、重試或快取）",
-    "2. 針對頑疾代碼的徹底重構計畫",
-    "3. 監控指標與告警閾值優化"
-  ]
-}}
-"""
-
-    messages = [
-        {"role": "system", "content": f"你是一位精通微服務架構與系統高可用的 SRE 總架構師，專精於 [{service_name}] 的營運健康評估與週度技術治理。"},
-        {"role": "user", "content": prompt}
-    ]
-
-    try:
-        response = openai_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.2
-        )
-        raw_output = response.choices[0].message.content.strip()
-        clean_json = raw_output
-        if clean_json.startswith("```"):
-            lines = clean_json.split("\n")
-            if lines[0].startswith("```json") or lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].startswith("```"):
-                lines = lines[:-1]
-            clean_json = "\n".join(lines).strip()
-        return json.loads(clean_json)
-    except Exception as e:
-        print(f"⚠️ 週度 LLM 專案分析失敗: {e}")
-        sev = "Critical" if stats.get("total_errors", 0) > 50 else ("Warning" if stats.get("total_errors", 0) > 0 else "Normal")
-        return {
-            "title": f"[SRE-Weekly] {service_name} 週度營運穩定度與架構綜整報告 ({week_str})",
-            "severity": sev,
-            "trend_summary": f"專案過去 7 天累計發生 {stats.get('total_errors', 0)} 次異常日誌，涵蓋 {stats.get('distinct_issues_count', 0)} 個獨立問題類型。",
-            "recurring_issues": [
-                {
-                    "location": "系統常規日誌",
-                    "description": "需持續關注外部連線與資源釋放",
-                    "impact": "可能導致暫時性網路延遲或回應超時"
-                }
-            ],
-            "action_items": [
-                "1. 檢視日誌集中管理之 ERROR 等級項目",
-                "2. 評估資料庫與外部 API 之連線池設定",
-                "3. 維持 CI/CD 自動化測試覆蓋率"
-            ]
-        }
-
-def generate_project_weekly_report(service_name: str, week_str: str = None, base_dir: str = "reports", send_email: bool = True) -> str:
-    """
-    完整執行單一微服務專案的每週綜整報告生成流程
-    """
-    w_str = week_str or get_current_week_str()
-    # 確保代碼鏡像為最新
-    sync_repo(service_name)
-    
-    # 1. 聚合數據
-    stats = aggregate_project_weekly_data(service_name, hours=168, base_dir=base_dir)
-    
-    # 2. AI 診斷
-    ai_analysis = analyze_project_weekly_holistically(service_name, stats, w_str)
-    
-    # 3. 儲存週報 Markdown
-    report_file = save_project_weekly_report(service_name, stats, ai_analysis, w_str, base_dir=base_dir)
-    print(f"📄 專案 [{service_name}] 第 {w_str} 週週報已產生: {report_file}")
-    
-    # 4. 發送專屬通知郵件
-    if send_email:
-        title = ai_analysis.get("title", f"{service_name} 第 {w_str} 週 SRE 營運週報")
-        report_url = f"{CHATOPS_BASE_URL}/weekly?service={service_name}&week={w_str}"
-        send_weekly_email_notification(title, service_name, ai_analysis, report_url=report_url)
-        
-    return report_file
-
-def aggregate_global_weekly_data(hours: int = 168, base_dir: str = "reports") -> dict:
-    """
-    聚合全微服務系統在過去 7 天內的總體營運指標與各專案排行榜
-    """
-    projects_cfg = load_projects_config()
-    logs_raw = fetch_recent_logs(hours=hours, level="ERROR")
-    
-    # 依專案分類
-    proj_error_counts = {}
-    proj_envs = {}
-    for l in logs_raw:
-        sname = match_log_to_service(l, projects_cfg)
-        proj_error_counts[sname] = proj_error_counts.get(sname, 0) + 1
-        
-        env_val = l.get("environment") or l.get("env") or "production"
-        if sname not in proj_envs:
-            proj_envs[sname] = {}
-        proj_envs[sname][str(env_val).lower()] = proj_envs[sname].get(str(env_val).lower(), 0) + 1
-
-    rankings = []
-    # 包含所有註冊的專案（即使 0 錯誤）
-    all_names = set(list(projects_cfg.keys()) + list(proj_error_counts.keys()))
-    for sname in all_names:
-        cnt = proj_error_counts.get(sname, 0)
-        sev = "Critical" if cnt >= 50 else ("Warning" if cnt > 0 else "Normal")
-        envs_dict = proj_envs.get(sname, {})
-        top_env = max(envs_dict, key=envs_dict.get) if envs_dict else "production"
-        rankings.append({
-            "service_name": sname,
-            "errors_7d": cnt,
-            "severity": sev,
-            "top_env": top_env
-        })
-        
-    rankings.sort(key=lambda x: x["errors_7d"], reverse=True)
-    
-    return {
-        "total_services": len(all_names),
-        "total_system_errors": len(logs_raw),
-        "service_rankings": rankings
-    }
-
-def analyze_global_weekly_holistically(all_stats: dict, week_str: str) -> dict:
-    """
-    調用 LLM 大腦站在全域 SRE 總架構師角度進行全系統週度評估
-    """
-    print(f"🧠 正在請求 SRE AI 大腦 ({LLM_MODEL}) 對【全系統微服務】進行第 {week_str} 週全域總分析...")
-    
-    rankings_json = json.dumps(all_stats.get("service_rankings", []), ensure_ascii=False, indent=2)
-    prompt = f"""你是一位微服務系統 SRE 總架構師與技術主管。
-以下是過去 7 天（168 小時）全系統所有微服務專案的綜合統計數據：
-
-【受監控微服務數量】：{all_stats.get("total_services", 0)} 個專案
-【全系統 7 天累計錯誤總數】：{all_stats.get("total_system_errors", 0)} 次
-【各微服務故障頻率與健康排行】：
-```json
-{rankings_json}
-```
-
-請站在全域 SRE 總架構師視角，綜觀分析本週全微服務系統的健康狀況，產出一份全域總控營運週報。
-請嚴格輸出符合以下 JSON 格式的內容（直接輸出純 JSON，不要夾帶任何其他文字）：
-{{
-  "title": "🌐 [SRE 全域總體週報] 全微服務系統營運與架構健康評估 ({week_str})",
-  "severity": "Healthy / Warning / Critical",
-  "executive_summary": "全系統一週營運綜整概述，包含整體穩定度指標與最需要關注的瓶頸服務。",
-  "cascading_analysis": "分析各微服務之間的相依性、調用鏈與連鎖反應風險（例如共用資源瓶頸、網路抖動或第三方相依問題）。",
-  "strategic_recommendations": [
-    "1. 全域架構調優重點 1",
-    "2. 全域架構調優重點 2",
-    "3. 資源配置與容量規劃建議"
-  ]
-}}
-"""
-
-    messages = [
-        {"role": "system", "content": "你是一位頂尖的 SRE 總架構師，專精於分散式微服務叢集的可觀測性治理與高可用架構演進。"},
-        {"role": "user", "content": prompt}
-    ]
-
-    try:
-        response = openai_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.2
-        )
-        raw_output = response.choices[0].message.content.strip()
-        clean_json = raw_output
-        if clean_json.startswith("```"):
-            lines = clean_json.split("\n")
-            if lines[0].startswith("```json") or lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].startswith("```"):
-                lines = lines[:-1]
-            clean_json = "\n".join(lines).strip()
-        return json.loads(clean_json)
-    except Exception as e:
-        print(f"⚠️ 全域週度 LLM 分析失敗: {e}")
-        tot_err = all_stats.get("total_system_errors", 0)
-        sev = "Critical" if tot_err > 100 else ("Warning" if tot_err > 0 else "Healthy")
-        return {
-            "title": f"🌐 [SRE 全域總體週報] 全微服務系統營運與架構健康評估 ({week_str})",
-            "severity": sev,
-            "executive_summary": f"全域共監控 {all_stats.get('total_services', 0)} 個微服務專案，過去一週累計檢測到 {tot_err} 筆異常日誌。",
-            "cascading_analysis": "各微服務在相依調用與資料庫交互時需保持重試防護與降級備援機制。",
-            "strategic_recommendations": [
-                "1. 針對累計異常較高之專案安排架構優化",
-                "2. 檢視全域連線池與微服務調用超時設定",
-                "3. 持續強化跨專案可觀測性監控覆蓋"
-            ]
-        }
-
-def generate_global_weekly_report(week_str: str = None, base_dir: str = "reports", send_email: bool = True) -> str:
-    """
-    完整執行全域總控週報生成流程
-    """
-    w_str = week_str or get_current_week_str()
-    # 1. 聚合全域數據
-    all_stats = aggregate_global_weekly_data(hours=168, base_dir=base_dir)
-    
-    # 2. AI 宏觀診斷
-    ai_global_analysis = analyze_global_weekly_holistically(all_stats, w_str)
-    
-    # 3. 儲存週報 Markdown
-    report_file = save_global_weekly_report(all_stats, ai_global_analysis, w_str, base_dir=base_dir)
-    print(f"🌐 全域總控第 {w_str} 週週報已產生: {report_file}")
-    
-    # 4. 發送全域管理通知郵件
-    if send_email:
-        title = ai_global_analysis.get("title", f"全系統第 {w_str} 週 SRE 總體營運週報")
-        report_url = f"{CHATOPS_BASE_URL}/weekly?week={w_str}"
-        send_weekly_email_notification(title, None, ai_global_analysis, report_url=report_url)
-        
-    return report_file
 
 
 def main(hours: int = 24, index_name: str = None):
@@ -1905,6 +1507,15 @@ def main(hours: int = 24, index_name: str = None):
                 base_dir=reports_base_dir
             )
             print(f"📄 專案報告落盤完成: {report_file}")
+
+            # (D-2) 更新專案單一活體總結報告 reports/<service_name>/summary.md (含 7 天滾動趨勢矩陣與技術債字典)
+            summary_file = update_project_summary(
+                service_name=sname,
+                aggregated_errors=aggregated,
+                ai_analysis=ai_analysis,
+                base_dir=reports_base_dir
+            )
+            print(f"📋 專案活體總結更新完成: {summary_file}")
             
             # (E) 同步至該專案 GitLab Issue
             sync_master_report_to_gitlab(report_file, ai_analysis, project_id=proj_id)
