@@ -1,0 +1,19 @@
+{
+  "nchc-safty-alert": {
+    "project_path": "nchc/nchc-safty-alert",
+    "project_id": 13,
+    "branch": "master",
+    "description": "社工人員執業安全危害事件通報系統",
+    "log_field": "service.name",
+    "log_value": "nchc-safty-alert"
+  },
+  "socialwork2-rag-backend": {
+    "project_path": "nchc/isocial-rag-demo",
+    "project_id": 14,
+    "branch": "main",
+    "description": "socialwork2-rag-backend",
+    "log_field": "service_name",
+    "log_value": "socialwork2-rag-backend",
+    "notification_emails": "az6332581@gmail.com, f109110114@nkust.edu.tw"
+  }
+}

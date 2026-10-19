@@ -1,0 +1,19 @@
+services:
+  sre-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sre-ai-sentinel
+    restart: unless-stopped
+    network_mode: "host"
+    env_file:
+      - .env
+    volumes:
+      # 持久化報表輸出與日誌
+      - ./reports:/app/reports
+      # 持久化拉取下來的微服務倉庫（重啟不需重複 clone）
+      - ./repos:/app/repos
+      # 持久化專案註冊配置（網頁端新增/編輯專案時自動同步到主機）
+      - ./projects.json:/app/projects.json
+    environment:
+      - PYTHONUNBUFFERED=1
