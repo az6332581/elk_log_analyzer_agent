@@ -1049,10 +1049,22 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     
                     const queryWord = encodeURIComponent(errName.split(/[:\s]/)[0]);
                     const logLink = `/logs?service=${{encodeURIComponent(serviceName)}}&query=${{queryWord}}&time_range=7d`;
+                    const snameEsc = encodeURIComponent(serviceName);
+                    const fpEsc = encodeURIComponent(item.fp || '');
+
+                    const actionBtn = issueType === 'acknowledged'
+                        ? `<button type="button" onclick="unackFromModal('${{snameEsc}}', '${{fpEsc}}')" class="px-2.5 py-1 text-xs font-semibold bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg shadow-2xs transition flex items-center gap-1 cursor-pointer" title="恢復每日例行告警追蹤">
+                            <span>↩️</span>
+                            <span>恢復追蹤</span>
+                           </button>`
+                        : `<button type="button" onclick="ackFromModal('${{snameEsc}}', '${{fpEsc}}')" class="px-2.5 py-1 text-xs font-semibold bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg shadow-2xs transition flex items-center gap-1 cursor-pointer" title="標記為已知待排期，日報將不再發 Email 告警此問題">
+                            <span>🔕</span>
+                            <span>暫不處理</span>
+                           </button>`;
 
                     return `
                     <div class="p-3.5 bg-slate-50/80 hover:bg-slate-100/80 rounded-xl border border-slate-200 transition">
-                        <div class="flex items-start justify-between gap-2">
+                        <div class="flex items-start justify-between gap-3">
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-center gap-2 flex-wrap mb-1">
                                     <span class="font-mono font-bold text-slate-900 text-xs break-all">${{idx + 1}}. ${{errName}}</span>
@@ -1071,10 +1083,13 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                                 </div>
                                 ${{note}}
                             </div>
-                            <a href="${{logLink}}" target="_blank" class="px-2.5 py-1 text-xs font-semibold bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg shadow-2xs transition flex-shrink-0 flex items-center gap-1" title="前往即時日誌探測器查詢此異常">
-                                <span>🔍</span>
-                                <span>查日誌</span>
-                            </a>
+                            <div class="flex items-center gap-1.5 flex-shrink-0">
+                                ${{actionBtn}}
+                                <a href="${{logLink}}" target="_blank" class="px-2.5 py-1 text-xs font-semibold bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg shadow-2xs transition flex items-center gap-1" title="前往即時日誌探測器查詢此異常">
+                                    <span>🔍</span>
+                                    <span>查日誌</span>
+                                </a>
+                            </div>
                         </div>
                     </div>
                     `;
@@ -1086,6 +1101,51 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
 
         function closeIssuesModal() {{
             document.getElementById('issuesModal').classList.add('hidden');
+        }}
+
+        async function ackFromModal(encodedServiceName, encodedFp) {{
+            const serviceName = decodeURIComponent(encodedServiceName);
+            const fp = decodeURIComponent(encodedFp);
+            const note = prompt("請輸入已知備註（選填，例如：Q4重構再處理、等待外部API恢復）：", "已知問題，暫緩處理");
+            if (note === null) return;
+            try {{
+                const res = await fetch('/api/issues/acknowledge', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{service_name: serviceName, fingerprint: fp, note: note}})
+                }});
+                const data = await res.json();
+                if (data.status === 'ok') {{
+                    alert('✅ ' + data.message);
+                    window.location.reload();
+                }} else {{
+                    alert('❌ 標記失敗: ' + (data.message || '未知錯誤'));
+                }}
+            }} catch (e) {{
+                alert('❌ 請求失敗: ' + e);
+            }}
+        }}
+
+        async function unackFromModal(encodedServiceName, encodedFp) {{
+            const serviceName = decodeURIComponent(encodedServiceName);
+            const fp = decodeURIComponent(encodedFp);
+            if (!confirm("確定要將此問題恢復為正常告警追蹤嗎？")) return;
+            try {{
+                const res = await fetch('/api/issues/unacknowledge', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{service_name: serviceName, fingerprint: fp}})
+                }});
+                const data = await res.json();
+                if (data.status === 'ok') {{
+                    alert('✅ ' + data.message);
+                    window.location.reload();
+                }} else {{
+                    alert('❌ 恢復失敗: ' + (data.message || '未知錯誤'));
+                }}
+            }} catch (e) {{
+                alert('❌ 請求失敗: ' + e);
+            }}
         }}
         let emailList = [];
 

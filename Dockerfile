@@ -1,4 +1,4 @@
-﻿# 使用官方輕量 Python 3.11 映像檔
+# 使用官方輕量 Python 3.11 映像檔
 FROM python:3.11-slim
 
 # 避免 Python 寫入 .pyc 並開啟 unbuffered 輸出，利於 Docker 日誌即時顯示
@@ -23,8 +23,8 @@ COPY requirements.txt .
 # 安裝 Python 依賴套件
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 複製應用程式核心代碼
-COPY main.py projects.json ./
+# 複製應用程式核心代碼 (projects.json 走 docker-compose volume 掛載，不寫死在鏡像)
+COPY main.py ./
 COPY core/ ./core/
 COPY agents/ ./agents/
 COPY skills/ ./skills/
