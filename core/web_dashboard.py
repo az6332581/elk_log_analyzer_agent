@@ -748,6 +748,18 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             
             <!-- 右側：功能按鈕組 (全部單行緊湊，嚴禁換行折斷) -->
             <div class="flex items-center gap-2 flex-shrink-0">
+                <!-- 大螢幕監控：5 分鐘自動刷新指示器 -->
+                <div id="autoRefreshBadge" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-mono text-slate-700 shadow-2xs whitespace-nowrap select-none" title="大螢幕監控模式：每 5 分鐘自動刷新頁面同步狀態">
+                    <span class="relative flex h-2 w-2">
+                        <span id="autoRefreshPing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span id="autoRefreshDot" class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span id="autoRefreshLabel" class="font-semibold text-slate-500">自動同步:</span>
+                    <span id="autoRefreshTimer" class="font-bold text-slate-800">05:00</span>
+                    <button type="button" id="autoRefreshToggleBtn" onclick="toggleAutoRefresh()" class="ml-0.5 text-slate-400 hover:text-slate-800 transition cursor-pointer" title="暫停或恢復自動定時刷新">
+                        ⏸️
+                    </button>
+                </div>
                 <button onclick="openAddModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition shadow-sm active:scale-95 whitespace-nowrap">
                     <span>➕</span>
                     <span>新增專案</span>
@@ -1475,6 +1487,88 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                 alert('❌ 呼叫測試失敗: ' + e);
             }}
         }}
+
+        // ==========================================
+        // 大螢幕看闆模式：5 分鐘智慧定時自動刷新
+        // ==========================================
+        const REFRESH_SECONDS = 300; // 5 分鐘
+        let autoRefreshLeft = REFRESH_SECONDS;
+        let autoRefreshActive = localStorage.getItem('sre_dashboard_auto_refresh') !== 'false';
+
+        function updateAutoRefreshUI() {{
+            const pingEl = document.getElementById('autoRefreshPing');
+            const dotEl = document.getElementById('autoRefreshDot');
+            const timerEl = document.getElementById('autoRefreshTimer');
+            const btnEl = document.getElementById('autoRefreshToggleBtn');
+            const labelEl = document.getElementById('autoRefreshLabel');
+
+            if (!timerEl || !btnEl) return;
+
+            if (!autoRefreshActive) {{
+                if (pingEl) pingEl.classList.add('hidden');
+                if (dotEl) {{
+                    dotEl.className = 'relative inline-flex rounded-full h-2 w-2 bg-slate-400';
+                }}
+                if (labelEl) labelEl.innerText = '自動同步:';
+                timerEl.innerText = '已暫停';
+                timerEl.className = 'font-bold text-slate-400';
+                btnEl.innerText = '▶️';
+                btnEl.title = '點擊恢復自動定時同步 (每 5 分鐘)';
+                return;
+            }}
+
+            if (pingEl) pingEl.classList.remove('hidden');
+            if (dotEl) {{
+                dotEl.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
+            }}
+            if (labelEl) labelEl.innerText = '自動同步:';
+            timerEl.className = 'font-bold text-slate-800';
+            btnEl.innerText = '⏸️';
+            btnEl.title = '點擊暫停自動定時同步';
+
+            const m = Math.floor(autoRefreshLeft / 60).toString().padStart(2, '0');
+            const s = (autoRefreshLeft % 60).toString().padStart(2, '0');
+            timerEl.innerText = `${{m}}:${{s}}`;
+        }}
+
+        function toggleAutoRefresh() {{
+            autoRefreshActive = !autoRefreshActive;
+            localStorage.setItem('sre_dashboard_auto_refresh', autoRefreshActive);
+            if (autoRefreshActive) {{
+                autoRefreshLeft = REFRESH_SECONDS;
+            }}
+            updateAutoRefreshUI();
+        }}
+
+        setInterval(() => {{
+            if (!autoRefreshActive) return;
+
+            autoRefreshLeft--;
+            if (autoRefreshLeft <= 0) {{
+                // 智慧防打擾：檢查是否正在打開任何彈跳視窗（查看問題或編輯）
+                const issuesModal = document.getElementById('issuesModal');
+                const addModal = document.getElementById('addModal');
+                const isInteracting = (issuesModal && !issuesModal.classList.contains('hidden')) ||
+                                      (addModal && !addModal.classList.contains('hidden'));
+
+                if (isInteracting) {{
+                    // 使用者正在操作，延後 30 秒再刷新，不中斷當前瀏覽
+                    autoRefreshLeft = 30;
+                    const timerEl = document.getElementById('autoRefreshTimer');
+                    if (timerEl) timerEl.innerText = '延後中';
+                    return;
+                }}
+
+                // 執行安全重整
+                window.location.reload();
+                return;
+            }}
+
+            updateAutoRefreshUI();
+        }}, 1000);
+
+        // 初始化指示器
+        updateAutoRefreshUI();
     </script>
 </body>
 </html>'''
