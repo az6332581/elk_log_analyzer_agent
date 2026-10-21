@@ -120,6 +120,20 @@ class IssueLifecycleTracker:
                 new_item["error_type"] = norm_etype
                 merged_issues[new_fp] = new_item
 
+        # 🛡️ 自動清洗 cached_analysis 中反覆疊加的【⏳ 連續頑疾持續追蹤中】髒標籤
+        for fp_k, it_v in merged_issues.items():
+            ca = it_v.get("cached_analysis")
+            if ca and isinstance(ca, dict):
+                rcs = ca.get("root_cause_summary") or ""
+                if "【⏳" in rcs:
+                    clean_rcs = re.sub(r'^(【⏳\s*連續頑疾持續追蹤中.*?】\s*)+', '', rcs, flags=re.MULTILINE).strip()
+                    c_days = it_v.get("consecutive_days", 1)
+                    target_tag = f"【⏳ 連續頑疾持續追蹤中（已連續 {c_days} 天）】\n" if c_days > 1 else ""
+                    new_rcs = target_tag + clean_rcs
+                    if new_rcs != rcs:
+                        ca["root_cause_summary"] = new_rcs
+                        modified = True
+
         state["issues"] = merged_issues
         return state, modified
 

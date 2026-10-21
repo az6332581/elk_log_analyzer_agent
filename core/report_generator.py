@@ -341,7 +341,9 @@ def update_project_summary(
 
         # 分類詳細資訊
         cached_info = saved_item.get("cached_analysis") or {}
-        root_cause = cached_info.get("root_cause_summary") or ai_analysis.get("correlation_analysis") or "待進一步排查底層連線與業務邏輯。"
+        raw_root_cause = cached_info.get("root_cause_summary") or ai_analysis.get("correlation_analysis") or "待進一步排查底層連線與業務邏輯。"
+        clean_root_cause = re.sub(r'^(【⏳\s*連續頑疾持續追蹤中.*?】\s*)+', '', raw_root_cause, flags=re.MULTILINE).strip()
+        root_cause = (f"【⏳ 連續頑疾持續追蹤中（已連續 {consecutive_d} 天）】\n" + clean_root_cause) if consecutive_d > 1 else clean_root_cause
 
         item_detail = {
             "fp": fp,

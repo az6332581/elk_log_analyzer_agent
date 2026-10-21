@@ -1326,10 +1326,13 @@ def analyze_all_errors_holistically(
         first_cache = aggregated_errors[0]["cached_analysis"]
         consecutive_d = lifecycle_summary.get("max_consecutive_days", 2)
         print(f"⚡ [AI 快取命中] 專案 [{service_name}] 的 {len(aggregated_errors)} 個問題均為已知連續頑疾 (已持續 {consecutive_d} 天)，直接沿用歷史修復建議 (節省 LLM Token)！")
+        raw_cause = first_cache.get("root_cause_summary") or first_cache.get("correlation_analysis") or "同前次分析結論，根本原因為外部服務連線或資源瓶頸。"
+        clean_cause = re.sub(r'^(【⏳\s*連續頑疾持續追蹤中.*?】\s*)+', '', raw_cause, flags=re.MULTILINE).strip()
+        final_cause = f"【⏳ 連續頑疾持續追蹤中（已連續 {consecutive_d} 天）】\n" + clean_cause
         return {
             "title": f"[SRE-Daily] {service_name} 異常全景診斷與協同修復工單 ({datetime.now().strftime('%Y-%m-%d')})",
             "severity": first_cache.get("severity", "High"),
-            "correlation_analysis": f"【⏳ 連續頑疾持續追蹤中（已連續 {consecutive_d} 天）】\n" + (first_cache.get("root_cause_summary") or first_cache.get("correlation_analysis") or "同前次分析結論，根本原因為外部服務連線或資源瓶頸。"),
+            "correlation_analysis": final_cause,
             "coordinated_fix_plan": first_cache.get("coordinated_fix_plan", "依既有跨檔案修復計畫持續推進排期。"),
             "sub_items": [f"持續追蹤連續第 {consecutive_d} 天未修復問題，維持監控降級機制"]
         }
