@@ -15,5 +15,7 @@ services:
       - ./repos:/app/repos
       # 持久化專案註冊配置（網頁端新增/編輯專案時自動同步到主機）
       - ./projects.json:/app/projects.json
+      # 持久化 SQLite 資料庫檔案
+      - ./data:/app/data
     environment:
       - PYTHONUNBUFFERED=1

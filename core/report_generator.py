@@ -135,6 +135,24 @@ def save_or_update_master_report(
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(master_md)
         
+    # 雙軌同步寫入資料庫 Diagnosis 表
+    try:
+        from core.database import get_db_session, Diagnosis
+        session = get_db_session()
+        diag = session.query(Diagnosis).filter_by(service_name=service_name, report_date=now.strftime("%Y-%m-%d")).first()
+        if not diag:
+            diag = Diagnosis(service_name=service_name, report_date=now.strftime("%Y-%m-%d"))
+            session.add(diag)
+        diag.severity = severity
+        diag.title = title
+        diag.root_cause_summary = correlation_analysis
+        diag.coordinated_fix_plan = coordinated_fix_plan
+        diag.sub_items_json = json.dumps(sub_items, ensure_ascii=False) if sub_items else "[]"
+        session.commit()
+        session.close()
+    except Exception as dbe:
+        print(f"⚠️ [ReportGenerator] DB Diagnosis save failed: {dbe}")
+
     update_reports_index_dashboard(base_dir)
     return report_file
 

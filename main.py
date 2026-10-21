@@ -41,6 +41,10 @@ from pydantic import BaseModel
 from skills import TOOLS_SCHEMA, execute_skill
 from skills.code_tools import fetch_code_snippet
 from core.issue_tracker import tracker as issue_tracker
+from core.database import init_db
+
+# 🛡️ 初始化資料庫與執行平滑遷移
+init_db()
 
 # 強制設定標準輸出為 UTF-8 編碼，防止 Windows 下 cp950 崩潰
 try:

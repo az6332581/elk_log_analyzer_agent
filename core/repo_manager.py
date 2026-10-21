@@ -14,8 +14,30 @@ PROJECTS_CONFIG_PATH = os.path.join(ROOT_DIR, "projects.json")
 BACKUP_CONFIG_PATH = os.path.join(ROOT_DIR, "reports", ".projects_backup.json")
 
 def load_projects_config() -> dict:
+    """
+    從資料庫加載微服務註冊設定；若 DB 尚未初始化則自癒從 projects.json 匯入。
+    若 DB 失敗則平滑降級至 projects.json 與備份檔。
+    """
     data = {}
-    if os.path.exists(PROJECTS_CONFIG_PATH):
+    try:
+        from core.database import get_db_session, Project, init_db
+        session = get_db_session()
+        projects = session.query(Project).all()
+        if projects:
+            for p in projects:
+                data[p.service_name] = p.to_dict()
+        else:
+            # 資料庫尚空，自動嘗試初始化匯入
+            init_db()
+            projects = session.query(Project).all()
+            for p in projects:
+                data[p.service_name] = p.to_dict()
+        session.close()
+    except Exception as e:
+        print(f"[Repo Manager] DB load projects failed (fallback to file): {e}")
+
+    # 若 DB 未取得任何資料，降級從 projects.json 讀取
+    if not data and os.path.exists(PROJECTS_CONFIG_PATH):
         try:
             with open(PROJECTS_CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -47,6 +69,36 @@ def load_projects_config() -> dict:
     return data
 
 def save_projects_config(configs: dict) -> bool:
+    """
+    雙軌同步：儲存至資料庫 Project 表，同時鏡像寫入 projects.json 與 reports/.projects_backup.json
+    """
+    db_success = False
+    try:
+        from core.database import get_db_session, Project
+        session = get_db_session()
+        # 清除現有或比對 upsert
+        current_names = set(configs.keys())
+        # 刪除已不存在的
+        session.query(Project).filter(~Project.service_name.in_(current_names)).delete(synchronize_session=False)
+        for sname, conf in configs.items():
+            proj = session.query(Project).filter_by(service_name=sname).first()
+            if not proj:
+                proj = Project(service_name=sname)
+                session.add(proj)
+            proj.project_path = conf.get("project_path", "")
+            proj.project_id = conf.get("project_id")
+            proj.branch = conf.get("branch", "main")
+            proj.description = conf.get("description", "")
+            proj.log_field = conf.get("log_field", "")
+            proj.log_value = conf.get("log_value", "")
+            proj.notification_emails = conf.get("notification_emails", "")
+            proj.email_alert_enabled = conf.get("email_alert_enabled", True)
+        session.commit()
+        session.close()
+        db_success = True
+    except Exception as dbe:
+        print(f"[Repo Manager] DB save projects failed: {dbe}")
+
     try:
         with open(PROJECTS_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(configs, f, ensure_ascii=False, indent=2)
@@ -63,7 +115,7 @@ def save_projects_config(configs: dict) -> bool:
         return True
     except Exception as e:
         print(f"[Repo Manager] Save projects.json failed: {e}")
-        return False
+        return db_success
 
 def normalize_project_path(path: str) -> str:
     """自動將任何 GitLab URL (HTTP/HTTPS/SSH/相對路徑) 正規化為 group/project 格式"""
@@ -156,6 +208,18 @@ def delete_project(service_name: str, purge_files: bool = True) -> bool:
         del configs[service_name]
         save_projects_config(configs)
         existed = True
+
+    try:
+        from core.database import get_db_session, Project
+        session = get_db_session()
+        p = session.query(Project).filter_by(service_name=service_name).first()
+        if p:
+            session.delete(p)
+            session.commit()
+            existed = True
+        session.close()
+    except Exception as dbe:
+        print(f"[Repo Manager] DB delete project failed: {dbe}")
 
     if purge_files:
         # 1. 清理 repos/<service_name> 程式碼鏡像

@@ -138,6 +138,56 @@ class IssueLifecycleTracker:
         return state, modified
 
     def load_state(self, service_name: str) -> Dict[str, Any]:
+        """
+        雙軌讀取：優先從資料庫撈取微服務指紋與歷史紀錄；
+        若 DB 無資料或失敗，則降級讀取 reports/<service_name>/issue_state.json。
+        """
+        db_state: Dict[str, Any] = {"service_name": service_name, "issues": {}, "last_updated": ""}
+        try:
+            from core.database import get_db_session, Issue, IssueDailyHistory
+            session = get_db_session()
+            issues_db = session.query(Issue).filter_by(service_name=service_name).all()
+            if issues_db:
+                for item in issues_db:
+                    # 撈取對應的每日歷史
+                    history_records = session.query(IssueDailyHistory).filter_by(fingerprint=item.fingerprint).all()
+                    daily_hist = {h.date: h.count for h in history_records}
+                    
+                    ca = None
+                    if item.cached_analysis_json:
+                        try:
+                            ca = json.loads(item.cached_analysis_json)
+                        except Exception:
+                            ca = None
+
+                    db_state["issues"][item.fingerprint] = {
+                        "fingerprint": item.fingerprint,
+                        "service_name": item.service_name,
+                        "error_location": item.error_location,
+                        "error_type": item.error_type,
+                        "first_seen_date": item.first_seen_date,
+                        "last_seen_date": item.last_seen_date,
+                        "consecutive_days": item.consecutive_days,
+                        "today_count": item.today_count,
+                        "yesterday_count": item.yesterday_count,
+                        "total_occurrences": item.total_occurrences,
+                        "status": item.status,
+                        "is_acknowledged": (item.status == "acknowledged"),
+                        "acknowledge_note": item.acknowledge_note,
+                        "acknowledged_at": item.acknowledged_at,
+                        "cached_analysis": ca,
+                        "daily_history": daily_hist
+                    }
+                db_state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            session.close()
+        except Exception as dbe:
+            print(f"⚠️ [IssueTracker] DB load_state 失敗 (fallback to file): {dbe}")
+
+        # 若 DB 查到了資料，直接回傳
+        if db_state["issues"]:
+            return db_state
+
+        # 降級讀取本機 issue_state.json
         path = self._get_state_file_path(service_name)
         if not os.path.exists(path):
             return {"service_name": service_name, "issues": {}, "last_updated": ""}
@@ -155,15 +205,65 @@ class IssueLifecycleTracker:
             return {"service_name": service_name, "issues": {}, "last_updated": ""}
 
     def save_state(self, service_name: str, state: Dict[str, Any]) -> bool:
+        """
+        雙軌同步寫入：儲存至資料庫 Issue / IssueDailyHistory 表，同時鏡像寫入 issue_state.json
+        """
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        state["last_updated"] = now_str
+        
+        # 1. 寫入資料庫
+        db_success = False
+        try:
+            from core.database import get_db_session, Issue, IssueDailyHistory
+            session = get_db_session()
+            issues_dict = state.get("issues", {})
+            for fp, item in issues_dict.items():
+                ca = item.get("cached_analysis")
+                ca_json = json.dumps(ca, ensure_ascii=False) if ca else None
+
+                db_issue = session.query(Issue).filter_by(fingerprint=fp).first()
+                if not db_issue:
+                    db_issue = Issue(fingerprint=fp, service_name=service_name)
+                    session.add(db_issue)
+                
+                db_issue.service_name = service_name
+                db_issue.error_type = item.get("error_type", "UnknownError")
+                db_issue.error_location = item.get("error_location", "unknown:0")
+                db_issue.first_seen_date = item.get("first_seen_date", "")
+                db_issue.last_seen_date = item.get("last_seen_date", "")
+                db_issue.consecutive_days = item.get("consecutive_days", 1)
+                db_issue.today_count = item.get("today_count", 0)
+                db_issue.yesterday_count = item.get("yesterday_count", 0)
+                db_issue.total_occurrences = item.get("total_occurrences", 0)
+                db_issue.status = item.get("status", "new")
+                db_issue.acknowledge_note = item.get("acknowledge_note")
+                db_issue.acknowledged_at = item.get("acknowledged_at")
+                db_issue.cached_analysis_json = ca_json
+
+                # 同步每日歷史
+                for d, cnt in item.get("daily_history", {}).items():
+                    hist = session.query(IssueDailyHistory).filter_by(fingerprint=fp, date=d).first()
+                    if not hist:
+                        hist = IssueDailyHistory(fingerprint=fp, date=d, count=cnt)
+                        session.add(hist)
+                    else:
+                        hist.count = cnt
+
+            session.commit()
+            session.close()
+            db_success = True
+        except Exception as dbe:
+            print(f"⚠️ [IssueTracker] DB save_state 失敗: {dbe}")
+
+        # 2. 寫入本機 issue_state.json 鏡像
         path = self._get_state_file_path(service_name)
         try:
-            state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
             print(f"⚠️ [IssueTracker] 儲存狀態檔失敗 ({service_name}): {e}")
-            return False
+            return db_success
 
     def update_lifecycle(
         self,

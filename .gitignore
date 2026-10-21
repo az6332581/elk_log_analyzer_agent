@@ -21,6 +21,12 @@ projects.json
 *.backup.json
 projects_backup_*.json
 
+# 本地 SQLite 資料庫 (嚴禁提交生產/測試本機資料庫)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+!data/.gitkeep
+
 # 專案異常生命週期運行狀態快取
 reports/**/issue_state.json
 
