@@ -173,44 +173,158 @@ def send_alert_notification(service_name: str, task_info: dict, report_url: str 
             # 支援逗號或分號分隔多個收件人
             recipients = [e.strip() for e in re.split(r"[,;]", target_emails) if e.strip()]
             
-            # 嚴重度徽章顏色
-            badge_bg = "#ffe4e6" if severity in ("Critical", "High") else "#fef3c7"
-            badge_color = "#e11d48" if severity in ("Critical", "High") else "#d97706"
+            # 依據嚴重度決定配色風格
+            sev_upper = severity.upper()
+            if sev_upper in ("CRITICAL", "HIGH"):
+                header_gradient = "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)"
+                badge_bg = "#fee2e2"
+                badge_color = "#991b1b"
+                badge_border = "#fca5a5"
+                status_icon = "🚨"
+            elif sev_upper in ("MEDIUM", "WARNING"):
+                header_gradient = "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
+                badge_bg = "#fef3c7"
+                badge_color = "#92400e"
+                badge_border = "#fcd34d"
+                status_icon = "⚠️"
+            else:
+                header_gradient = "linear-gradient(135deg, #10b981 0%, #059669 100%)"
+                badge_bg = "#d1fae5"
+                badge_color = "#065f46"
+                badge_border = "#6ee7b7"
+                status_icon = "ℹ️"
+
+            # 總錯誤次數與獨立問題數
+            tot_err_count = sum(e.get("count", 1) for e in raw_errors)
+            distinct_count = len(raw_errors)
             
             html_body = f"""
-            <html>
-                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc; padding: 24px; color: #1e293b;">
-                    <div style="max-width: 680px; margin: 0 auto; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; padding: 32px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-                        <div style="border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 24px;">
-                            <span style="background: {badge_bg}; color: {badge_color}; font-weight: 700; font-size: 11px; padding: 4px 12px; border-radius: 9999px; letter-spacing: 0.5px;">{severity.upper()} SEVERITY</span>
-                            <h2 style="color: #0f172a; margin: 12px 0 6px 0; font-size: 20px;">🚨 SRE AI Sentinel 異常警報：{service_name}</h2>
-                            <p style="color: #64748b; font-size: 13px; margin: 0;">檢測時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)</p>
-                        </div>
-                        
-                        <div style="margin-bottom: 20px;">
-                            <h4 style="color: #334155; margin: 0 0 8px 0; font-size: 14px;">🌐 連鎖因果分析：</h4>
-                            <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 14px 16px; border-radius: 10px; font-size: 13px; color: #1e293b; line-height: 1.6;">
-                                {correlation}
-                            </div>
-                        </div>
+            <!DOCTYPE html>
+            <html lang="zh-TW">
+            <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>[SRE Sentinel] {service_name} 異常告警</title>
+            </head>
+            <body style="margin: 0; padding: 0; background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #334155;">
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0f172a; padding: 32px 12px;">
+                    <tr>
+                        <td align="center">
+                            <!-- Main Container Card -->
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 640px; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 10px 10px -5px rgba(0, 0, 0, 0.2);">
+                                
+                                <!-- Top Header Banner -->
+                                <tr>
+                                    <td style="background: {header_gradient}; padding: 32px 32px 28px 32px; color: #ffffff;">
+                                        <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                <td>
+                                                    <div style="display: inline-block; background-color: rgba(255,255,255,0.2); backdrop-filter: blur(4px); padding: 4px 12px; border-radius: 9999px; font-size: 11px; font-weight: 800; letter-spacing: 0.8px; text-transform: uppercase;">
+                                                        {status_icon} SRE SENTINEL ALERT
+                                                    </div>
+                                                </td>
+                                                <td align="right">
+                                                    <span style="font-size: 12px; opacity: 0.9; font-weight: 500;">
+                                                        {datetime.now().strftime('%Y-%m-%d %H:%M')}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td colspan="2" style="padding-top: 14px;">
+                                                    <h1 style="margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.3px; line-height: 1.3;">
+                                                        {service_name}
+                                                    </h1>
+                                                    <p style="margin: 6px 0 0 0; font-size: 13px; opacity: 0.95; line-height: 1.5;">
+                                                        系統自動巡檢捕獲到服務異常日誌，已觸發告警通知。
+                                                    </p>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
 
-                        {errors_html}
+                                <!-- Metrics Stats Row -->
+                                <tr>
+                                    <td style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 16px 32px;">
+                                        <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                <td width="33%" align="center" style="border-right: 1px solid #e2e8f0;">
+                                                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">嚴重等級</div>
+                                                    <div style="margin-top: 4px; display: inline-block; background: {badge_bg}; color: {badge_color}; border: 1px solid {badge_border}; font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: 6px;">
+                                                        {severity.upper()}
+                                                    </div>
+                                                </td>
+                                                <td width="33%" align="center" style="border-right: 1px solid #e2e8f0;">
+                                                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">獨立問題數</div>
+                                                    <div style="margin-top: 4px; font-size: 16px; font-weight: 800; color: #0f172a;">
+                                                        {distinct_count} <span style="font-size: 11px; font-weight: normal; color: #64748b;">個</span>
+                                                    </div>
+                                                </td>
+                                                <td width="33%" align="center">
+                                                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">本日異常量</div>
+                                                    <div style="margin-top: 4px; font-size: 16px; font-weight: 800; color: #ef4444;">
+                                                        {tot_err_count} <span style="font-size: 11px; font-weight: normal; color: #64748b;">次</span>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
 
-                        <div style="margin-top: 28px; text-align: center;">
-                            <a href="{report_url or CHATOPS_BASE_URL}" target="_blank" style="display: inline-block; background: #4f46e5; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 10px; font-weight: 600; font-size: 14px; box-shadow: 0 2px 4px rgba(79,70,229,0.2);">
-                                📄 前往 Web 查看完整診斷報告與即時日誌 →
-                            </a>
-                        </div>
-                        
-                        <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #f1f5f9; text-align: center; color: #94a3b8; font-size: 11px;">
-                            SRE AI Sentinel 自動巡檢與告警系統 ｜ 守護服務穩定運行
-                        </div>
-                    </div>
-                </body>
+                                <!-- Content Body -->
+                                <tr>
+                                    <td style="padding: 28px 32px 32px 32px;">
+                                        
+                                        <!-- Root Cause / Correlation Analysis -->
+                                        <div style="margin-bottom: 26px;">
+                                            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
+                                                <span style="font-size: 15px;">🧠</span>
+                                                <h3 style="margin: 0; font-size: 14px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.3px;">
+                                                    AI 關聯與因果剖析
+                                                </h3>
+                                            </div>
+                                            <div style="background-color: #f8fafc; border-left: 4px solid #6366f1; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; border-radius: 0 10px 10px 0; padding: 16px; font-size: 13px; color: #1e293b; line-height: 1.65;">
+                                                {correlation}
+                                            </div>
+                                        </div>
+
+                                        <!-- Top Errors Breakdown -->
+                                        {errors_html}
+
+                                        <!-- CTA Action Buttons -->
+                                        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #f1f5f9; text-align: center;">
+                                            <a href="{report_url or CHATOPS_BASE_URL}" target="_blank" style="display: inline-block; background: #4f46e5; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 10px; font-weight: 700; font-size: 14px; letter-spacing: 0.2px; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.3);">
+                                                🚀 開啟 SRE Sentinel 控制台查看詳情 →
+                                            </a>
+                                            <div style="margin-top: 10px;">
+                                                <a href="{CHATOPS_BASE_URL}/logs?service={service_name}" target="_blank" style="color: #6366f1; text-decoration: none; font-size: 12px; font-weight: 600;">
+                                                    🔍 前往即時日誌探測器 (Log Explorer) 篩選
+                                                </a>
+                                            </div>
+                                        </div>
+
+                                    </td>
+                                </tr>
+
+                                <!-- Footer -->
+                                <tr>
+                                    <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 18px 32px; text-align: center;">
+                                        <p style="margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.5;">
+                                            此信件由 <strong>SRE AI Sentinel</strong> 智慧監控 Agent 自動發出。<br>
+                                            若欲調整本微服務告警頻率或靜音，請至控制台「⚙️ 專案設定」調整。
+                                        </p>
+                                    </td>
+                                </tr>
+
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </body>
             </html>
             """
             msg = MIMEText(html_body, 'html', 'utf-8')
-            msg['Subject'] = Header(f"🚨 [SRE Sentinel] {service_name} 偵測到異常 ({severity})", 'utf-8')
+            msg['Subject'] = Header(f"🚨 [{severity.upper()}] SRE Sentinel: {service_name} 異常告警通知", 'utf-8')
             msg['From'] = Header(f"SRE AI Sentinel <{SMTP_USER}>", 'utf-8')
             msg['To'] = ", ".join(recipients)
 
@@ -223,7 +337,7 @@ def send_alert_notification(service_name: str, task_info: dict, report_url: str 
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.sendmail(SMTP_USER, recipients, msg.as_string())
             server.quit()
-            print(f"📧 成功發送異常告警郵件至 {recipients}")
+            print(f"📧 成功發送高質感異常告警郵件至 {recipients}")
             email_sent = True
         except Exception as e:
             print(f"⚠️ 發送告警郵件失敗: {e}")
