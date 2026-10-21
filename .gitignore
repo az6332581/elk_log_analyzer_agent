@@ -1,4 +1,4 @@
-﻿# Python 快取與編譯檔
+# Python 快取與編譯檔
 __pycache__/
 *.py[cod]
 *.class
@@ -15,6 +15,13 @@ ENV/
 .env.local
 .env.*.local
 
+# 本地專案配置 (包含私人 Email 與內部路徑，上傳使用 projects.example.json)
+projects.json
+!projects.example.json
+
+# 專案異常生命週期運行狀態快取
+reports/**/issue_state.json
+
 # 本地鏡像專案代碼 (方案 B 自動同步之倉庫，避免重複追蹤)
 repos/
 
@@ -30,10 +37,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# 產生的診斷日誌報表 (預設保留首頁索引與 gitkeep)
-reports/report_*.md
+# 產生的診斷日誌報表與狀態快取 (嚴禁提交，各機器自行生成)
+reports/*
 !reports/.gitkeep
-!reports/index.md
 
 # 經驗案例暫存 (保留 gitkeep)
 !knowledge_base/cases/.gitkeep

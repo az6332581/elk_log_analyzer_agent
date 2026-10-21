@@ -106,6 +106,7 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
             "log_field": conf.get("log_field", ""),
             "log_value": conf.get("log_value", ""),
             "notification_emails": conf.get("notification_emails", ""),
+            "email_alert_enabled": conf.get("email_alert_enabled", True),
             "history": [],
             "env_stats": es_env_stats.get(sname, {})
         }
@@ -131,6 +132,7 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                     "latest_report_file": None,
                     "total_reports": 0,
                     "is_registered": False,
+                    "email_alert_enabled": True,
                     "history": [],
                     "env_stats": es_env_stats.get(sname, {})
                 }
@@ -193,8 +195,19 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                     services[sname]["severity"] = "Normal"
                     services[sname]["status"] = "HEALTHY"
 
-            # 檢查是否存在活體總結報告 summary.md
+            # 檢查是否存在活體總結報告 summary.md，若尚無則即時自動初始化
             summary_path = os.path.join(sub_path, "summary.md")
+            if not os.path.exists(summary_path):
+                try:
+                    from core.report_generator import update_project_summary
+                    update_project_summary(
+                        service_name=sname,
+                        aggregated_errors=[],
+                        ai_analysis={"severity": "Normal", "correlation_analysis": "過去時間內無新增異常，服務運作良好。"},
+                        base_dir=base_dir
+                    )
+                except Exception as _ex:
+                    pass
             services[sname]["has_summary"] = os.path.exists(summary_path)
 
             # 讀取該微服務專屬之生命週期追蹤檔 (issue_state.json)
@@ -203,26 +216,49 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
             chronic_cnt = 0
             ack_cnt = 0
             max_days = 0
+            new_list = []
+            chronic_list = []
+            ack_list = []
             if os.path.exists(state_file):
                 try:
                     with open(state_file, "r", encoding="utf-8") as sf:
                         s_data = json.load(sf)
                     for fp, it in s_data.get("issues", {}).items():
+                        issue_info = {
+                            "fp": fp,
+                            "error_type": str(it.get("error_type") or "UnknownError"),
+                            "error_location": str(it.get("error_location") or "unknown:0"),
+                            "today_count": it.get("today_count", 0),
+                            "total_occurrences": it.get("total_occurrences", 0),
+                            "consecutive_days": it.get("consecutive_days", 1),
+                            "first_seen_date": it.get("first_seen_date", ""),
+                            "last_seen_date": it.get("last_seen_date", ""),
+                            "status": it.get("status", "new"),
+                            "acknowledge_note": it.get("acknowledge_note", "")
+                        }
                         if it.get("status") == "acknowledged" or it.get("is_acknowledged"):
                             ack_cnt += 1
+                            ack_list.append(issue_info)
                         elif it.get("status") in ("new", "ongoing") and it.get("last_seen_date") == today_date_str:
                             c_days = it.get("consecutive_days", 1)
                             if c_days > 1:
                                 chronic_cnt += 1
                                 max_days = max(max_days, c_days)
+                                chronic_list.append(issue_info)
                             else:
                                 new_cnt += 1
+                                new_list.append(issue_info)
                 except Exception:
                     pass
             services[sname]["new_issues_count"] = new_cnt
             services[sname]["chronic_issues_count"] = chronic_cnt
             services[sname]["acknowledged_issues_count"] = ack_cnt
             services[sname]["max_consecutive_days"] = max_days
+            services[sname]["issues_details"] = {
+                "new": new_list,
+                "chronic": chronic_list,
+                "acknowledged": ack_list
+            }
 
     # 3. 若有指定 target_env，依據該環境在 ES 的真實錯誤動態重算專案狀態
     if target_env and target_env.strip():
@@ -286,9 +322,17 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
     }
 
 def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8929", current_env: str = "") -> str:
+    # 建立所有專案問題詳情 JSON，供前端 Modal 互動查詢
+    issues_detail_map = {}
+    for s in data["services"]:
+        issues_detail_map[s["service_name"]] = s.get("issues_details", {"new": [], "chronic": [], "acknowledged": []})
+    issues_detail_json = json.dumps(issues_detail_map, ensure_ascii=False)
+
     cards_html = ""
     for s in data["services"]:
         status = s["status"]
+        sname_esc_js = s['service_name'].replace("'", "\\'")
+
         # 1. 狀態標籤與呼吸燈
         if status == "CRITICAL":
             badge_class = "bg-rose-50 text-rose-700 border-rose-200"
@@ -303,26 +347,9 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             dot_class = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"
             status_text = "ALL HEALTHY"
 
-        # 2. 底部操作按鈕 (高度一致、左右均衡)
-        if s.get("has_summary"):
-            report_btn = f'''<a href="/report/{s['service_name']}/summary.md" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm active:scale-95">📋 專案活體總結</a>'''
-        elif s.get("latest_report_file"):
-            if s.get("is_today_report"):
-                report_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm active:scale-95">🚨 查看今日診斷</a>'''
-            else:
-                report_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition shadow-2xs active:scale-95">📄 查看最新歷史診斷</a>'''
-        else:
-            report_btn = '<div class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-100">🟢 運行正常無告警</div>'
-
-        if s["project_path"]:
-            gl_link = f"{gitlab_url.rstrip('/')}/{s['project_path']}"
-            gitlab_btn = f'''<a href="{gl_link}" target="_blank" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition shadow-sm">🦊 GitLab (ID: {s['project_id'] or '-'})</a>'''
-        else:
-            gitlab_btn = ""
-
-        # 3. 編輯與刪除按鈕
+        # 2. 編輯與刪除按鈕 (統一固定 28x28px 圖標按鈕，維持頂部槽位乾淨平整)
         btn_title = "自專案監控清單移除" if s["is_registered"] else "清理此專案殘留之歷史報告與快取"
-        delete_btn = f'''<button onclick="deleteProject('{s['service_name']}')" title="{btn_title}" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition">🗑️</button>'''
+        delete_btn = f'''<button onclick="deleteProject('{sname_esc_js}')" title="{btn_title}" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition text-xs">🗑️</button>'''
 
         desc_escaped = (s['description'] or "").replace("'", "\\'")
         proj_path_escaped = (s['project_path'] or "").replace("'", "\\'")
@@ -330,77 +357,91 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
         log_v_escaped = (s.get("log_value") or "").replace("'", "\\'")
         emails_escaped = (s.get("notification_emails") or "").replace("'", "\\'")
 
+        email_alert_enabled = s.get("email_alert_enabled", True)
+        email_status_js = "true" if email_alert_enabled else "false"
+
         if s["is_registered"]:
-            edit_btn = f'''<button onclick="openEditModal('{s['service_name']}', '{desc_escaped}', '{proj_path_escaped}', '{s['project_id'] or ''}', '{s['branch']}', '{log_f_escaped}', '{log_v_escaped}', '{emails_escaped}')" title="編輯配置" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition">✏️</button>'''
+            edit_btn = f'''<button onclick="openEditModal('{sname_esc_js}', '{desc_escaped}', '{proj_path_escaped}', '{s['project_id'] or ''}', '{s['branch']}', '{log_f_escaped}', '{log_v_escaped}', '{emails_escaped}', {email_status_js})" title="編輯配置" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition text-xs">✏️</button>'''
         else:
-            edit_btn = f'''<button onclick="openEditModal('{s['service_name']}', '', '', '', 'main', '', '', '')" title="點此為此微服務綁定 GitLab 配置" class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition shadow-sm">✏️ 認領註冊</button>'''
+            edit_btn = f'''<button onclick="openEditModal('{sname_esc_js}', '', '', '', 'main', '', '', '', true)" title="此服務為 ELK 自動探測發現，點此補齊 GitLab 與監控配置" class="w-7 h-7 flex items-center justify-center text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition border border-indigo-200 text-xs shadow-2xs font-bold">✏️</button>'''
 
-        # 4. 歷史報表
-        history_list = ""
-        if s["history"]:
-            for h in s["history"][:3]:
-                h_date = h['time'].split(' ')[0] if ' ' in h['time'] else h['time']
-                h_icon = "🔴" if h['severity'] == "High" else "🟡"
-                history_list += f'''
-                <div class="flex items-center justify-between text-xs py-1.5 border-b border-slate-100 last:border-0 hover:bg-white/80 px-1 rounded transition">
-                    <a href="/report/{s['service_name']}/{h['file']}" class="text-indigo-600 hover:text-indigo-800 hover:underline truncate max-w-[150px] font-medium flex items-center gap-1">
-                        <span>{h_icon}</span>
-                        <span>{h['file']}</span>
-                    </a>
-                    <span class="text-slate-600 font-medium">{h['issues']} 個問題</span>
-                    <span class="text-slate-400 font-mono text-[11px]">{h_date}</span>
-                </div>'''
-        else:
-            history_list = '<p class="text-xs text-slate-400 py-1 text-center">尚無歷史報告紀錄</p>'
-
-        issues_color = "text-rose-600" if s["issues_count"] > 0 else "text-emerald-600"
-
-        # 5. 日誌規則 Badge 與通知收件人 Badge
-        rule_badge = ""
+        # 3. 日誌規則 Badge (未設定時顯示統一灰色邊框佔位符，嚴防高度凹陷)
         if s.get("log_field"):
             val_text = s.get("log_value") or s["service_name"]
             rule_badge = f'''
-            <div class="mt-2">
-                <span class="inline-flex items-center gap-1.5 max-w-full text-[11px] bg-slate-50 text-slate-600 px-2.5 py-1 rounded-md border border-slate-200 font-mono truncate" title="日誌識別規則: {s['log_field']} = {val_text}">
+            <div class="mt-2 min-h-[26px] flex items-center">
+                <span class="inline-flex items-center gap-1.5 max-w-full text-[11px] bg-slate-50 text-slate-600 px-2.5 py-0.5 rounded-md border border-slate-200 font-mono truncate" title="日誌識別規則: {s['log_field']} = {val_text}">
                     <span class="text-slate-400 font-sans font-semibold">日誌:</span>
                     <span class="font-bold text-slate-800 truncate">{s["log_field"]} = "{val_text}"</span>
                 </span>
             </div>'''
+        else:
+            rule_badge = '''
+            <div class="mt-2 min-h-[26px] flex items-center">
+                <span class="inline-flex items-center gap-1.5 max-w-full text-[11px] text-slate-400 px-2.5 py-0.5 rounded-md border border-dashed border-slate-200 font-mono truncate" title="未指定特殊欄位，預設以 service_name 進行日誌比對">
+                    <span class="font-sans font-medium">日誌:</span>
+                    <span class="truncate">預設 service_name 欄位比對</span>
+                </span>
+            </div>'''
 
-        email_badge = ""
-        sname_esc = s['service_name'].replace("'", "\\'")
+        # 3-2. Email 告警開關與通知收件人 Badge (支援一鍵切換啟用/靜音)
+        if email_alert_enabled:
+            toggle_pill = f'''<button type="button" onclick="toggleEmailAlert('{sname_esc_js}')" title="點擊將此專案之異常 Email 告警靜音" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 hover:bg-rose-100 hover:text-rose-700 border border-emerald-200 transition cursor-pointer flex-shrink-0"><span>🟢 告警已開啟</span></button>'''
+        else:
+            toggle_pill = f'''<button type="button" onclick="toggleEmailAlert('{sname_esc_js}')" title="點擊恢復發送異常 Email 告警" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600 hover:bg-emerald-100 hover:text-emerald-800 border border-slate-300 transition cursor-pointer flex-shrink-0"><span>🔕 告警已靜音</span></button>'''
+
         if s.get("notification_emails"):
             email_badge = f'''
-            <div class="mt-1.5 flex items-center justify-between text-[11px] text-indigo-700 bg-indigo-50/70 border border-indigo-200/60 px-2 py-0.5 rounded-md" title="異常通知收件人: {s['notification_emails']}">
-                <div class="flex items-center gap-1 min-w-0">
-                    <span>📧</span>
+            <div class="mt-1.5 min-h-[28px] flex items-center justify-between text-[11px] text-indigo-700 bg-indigo-50/70 border border-indigo-200/60 px-2 py-0.5 rounded-md gap-1" title="異常通知收件人: {s['notification_emails']}">
+                <div class="flex items-center gap-1.5 min-w-0">
+                    {toggle_pill}
                     <span class="truncate font-mono">{s['notification_emails']}</span>
                 </div>
-                <button onclick="testEmailAlert('{sname_esc}')" title="點此發送測試信給該專案收件人" class="text-[10px] text-indigo-600 hover:text-indigo-900 font-semibold ml-1.5 flex-shrink-0 hover:underline">
-                    測試寄送
+                <button onclick="testEmailAlert('{sname_esc_js}')" title="點此發送測試信給該專案收件人" class="text-[10px] text-indigo-600 hover:text-indigo-900 font-semibold ml-1 flex-shrink-0 hover:underline">
+                    測試
                 </button>
             </div>'''
         else:
             email_badge = f'''
-            <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 px-1" title="未指定獨立收件人，使用全域預設">
-                <div class="flex items-center gap-1 min-w-0">
-                    <span>📧</span>
-                    <span class="truncate">使用系統預設收件人</span>
+            <div class="mt-1.5 min-h-[28px] flex items-center justify-between text-[11px] text-slate-500 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded-md gap-1" title="未指定獨立收件人，使用系統全域預設">
+                <div class="flex items-center gap-1.5 min-w-0">
+                    {toggle_pill}
+                    <span class="truncate text-slate-400">使用全域收件人</span>
                 </div>
-                <button onclick="testEmailAlert('{sname_esc}')" title="點此測試寄送給全域預設收件人" class="text-[10px] text-slate-500 hover:text-slate-800 font-medium ml-1.5 flex-shrink-0 hover:underline">
+                <button onclick="testEmailAlert('{sname_esc_js}')" title="點此測試寄送給全域預設收件人" class="text-[10px] text-slate-500 hover:text-slate-800 font-medium ml-1 flex-shrink-0 hover:underline">
                     測試
                 </button>
             </div>'''
 
-        # 6. 各環境日誌分佈膠囊標籤
-        env_badges = []
+        # 4. 生命週期標籤按鈕化 (支援點擊查看清單，無問題時給予綠色標籤佔位保證高度齊平)
+        life_badges = []
+        if s.get("new_issues_count", 0) > 0:
+            life_badges.append(f'''<button type="button" onclick="showIssuesModal('{sname_esc_js}', 'new', '今日新發問題')" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 hover:bg-rose-200 text-rose-700 border border-rose-200 transition cursor-pointer" title="點擊查看今日新發問題清單">🆕 {s["new_issues_count"]} 新問題 ↗</button>''')
+        if s.get("chronic_issues_count", 0) > 0:
+            max_d = s.get("max_consecutive_days", 2)
+            life_badges.append(f'''<button type="button" onclick="showIssuesModal('{sname_esc_js}', 'chronic', '連續頑疾 (未修復)')" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-200 transition cursor-pointer" title="連續多日重複出現未修復，點擊查看清單">⏳ {s["chronic_issues_count"]} 連續頑疾 ({max_d}天) ↗</button>''')
+        if s.get("acknowledged_issues_count", 0) > 0:
+            life_badges.append(f'''<button type="button" onclick="showIssuesModal('{sname_esc_js}', 'acknowledged', '已知暫緩問題 (Email 靜音)')" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 transition cursor-pointer" title="已標記已知待排期，點擊查看清單與暫緩原因">👁️ {s["acknowledged_issues_count"]} 已知暫緩 ↗</button>''')
+        
+        if not life_badges:
+            lifecycle_badges_html = '<div class="flex items-center gap-1 mt-1.5 min-h-[22px]"><span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-100">🟢 今日無新增異常</span></div>'
+        else:
+            lifecycle_badges_html = f'<div class="flex items-center gap-1 mt-1.5 min-h-[22px] flex-wrap">{" ".join(life_badges)}</div>'
+
+        issues_color = "text-rose-600" if s["issues_count"] > 0 else "text-emerald-600"
+
+        # 5. 各環境日誌分佈膠囊標籤 (預設突顯正式環境，其餘環境折疊按需展開)
         env_stats = s.get("env_stats", {})
+        prod_badges = []
+        other_badges = []
         if env_stats:
             for env_name, st in env_stats.items():
                 e_tot = st.get("total", 0)
                 e_err = st.get("error", 0)
                 e_lower = env_name.lower()
-                if "prod" in e_lower or "formal" in e_lower:
+                is_prod = ("prod" in e_lower or "formal" in e_lower)
+                
+                if is_prod:
                     if e_err > 0:
                         b_cls = "bg-rose-50 text-rose-700 border-rose-200 font-bold hover:bg-rose-100"
                         icon = "🟣"
@@ -420,38 +461,83 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                 else:
                     b_cls = "bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100"
                     icon = "🔵"
-                err_text = f"🔴 {e_err} 錯" if e_err > 0 else "🟢 0 錯"
+                    
+                err_text = f"🔴 {e_err} 錯" if e_err > 0 else "🟢 正常"
                 link_url = f"/logs?service={s['service_name']}&environment={env_name}&time_range=7d"
-                env_badges.append(f'''<a href="{link_url}" title="點擊檢視 {env_name} 日誌" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono border transition {b_cls}">{icon} {env_name}: {err_text} ({e_tot})</a>''')
-            env_badges_html = " ".join(env_badges)
+                badge_html = f'''<a href="{link_url}" title="點擊檢視 {env_name} 日誌 (近 7 天共 {e_tot} 筆)" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-mono border transition {b_cls}">{icon} {env_name}: {err_text}</a>'''
+                
+                if is_prod:
+                    prod_badges.append(badge_html)
+                else:
+                    other_badges.append(badge_html)
+                    
+            if not prod_badges and other_badges:
+                prod_badges.append(other_badges.pop(0))
+                
+            sname_key = re.sub(r'[^a-zA-Z0-9_]', '_', s['service_name'])
+            prod_part = " ".join(prod_badges) if prod_badges else '<span class="text-[11px] text-slate-400 font-mono">近 7 天無正式環境日誌</span>'
+            
+            if other_badges:
+                toggle_btn = f'''<button type="button" onclick="toggleEnvs('{sname_key}')" id="btn-toggle-envs-{sname_key}" class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md transition cursor-pointer"><span>▾ 其他環境</span></button>'''
+                collapse_div = f'''<div id="other-envs-{sname_key}" class="hidden flex items-center gap-1.5 flex-wrap w-full mt-2 pt-2 border-t border-slate-100">{" ".join(other_badges)}</div>'''
+                env_badges_html = f'''<div class="flex items-center gap-1.5 flex-wrap w-full">{prod_part} {toggle_btn}</div>{collapse_div}'''
+            else:
+                env_badges_html = f'''<div class="flex items-center gap-1.5 flex-wrap w-full">{prod_part}</div>'''
         else:
             env_badges_html = '<span class="text-[11px] text-slate-400 font-mono">近 7 天無各環境日誌</span>'
 
-        # 探測器連結自動帶入當前所選環境及近 7 天時間範圍
+        # 6. 歷史診斷報表 (固定高度容器 h-[76px]，確保所有卡片嚴格齊平)
+        history_list = ""
+        if s["history"]:
+            for h in s["history"][:2]:
+                h_date = h['time'].split(' ')[0] if ' ' in h['time'] else h['time']
+                h_icon = "🔴" if h['severity'] == "High" else "🟡"
+                history_list += f'''
+                <div class="flex items-center justify-between text-xs py-1 border-b border-slate-100 last:border-0 hover:bg-white/80 px-1 rounded transition">
+                    <a href="/report/{s['service_name']}/{h['file']}" class="text-indigo-600 hover:text-indigo-800 hover:underline truncate max-w-[150px] font-medium flex items-center gap-1 text-[11px]">
+                        <span>{h_icon}</span>
+                        <span class="truncate">{h['file']}</span>
+                    </a>
+                    <span class="text-slate-600 font-medium text-[11px]">{h['issues']} 個問題</span>
+                    <span class="text-slate-400 font-mono text-[10px]">{h_date}</span>
+                </div>'''
+        else:
+            history_list = '<p class="text-xs text-slate-400 py-2 text-center flex items-center justify-center gap-1"><span>📄</span><span>尚無歷史診斷報告紀錄</span></p>'
+
+        # 7. 底部 4 顆操作按鈕 (採用 2x2 統一網格 grid grid-cols-2，結構完全相同)
+        # 按鈕 1: 專案總結 / 今日診斷
+        if s.get("has_summary"):
+            btn_col1 = f'''<a href="/report/{s['service_name']}/summary.md" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm active:scale-95 truncate"><span>📊 專案總結</span></a>'''
+        elif s.get("latest_report_file"):
+            if s.get("is_today_report"):
+                btn_col1 = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm active:scale-95 truncate"><span>📝 今日診斷</span></a>'''
+            else:
+                btn_col1 = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs active:scale-95 truncate"><span>📝 最新診斷</span></a>'''
+        else:
+            btn_col1 = '''<div class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-100 truncate"><span>🟢 運行正常</span></div>'''
+
+        # 按鈕 2: GitLab 連結或綁定提示
+        if s["project_path"]:
+            gl_link = f"{gitlab_url.rstrip('/')}/{s['project_path']}"
+            btn_col2 = f'''<a href="{gl_link}" target="_blank" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition shadow-2xs truncate"><span>🦊 GitLab</span><span class="text-[10px] text-slate-400 font-mono">#{s['project_id'] or '-'}</span></a>'''
+        else:
+            btn_col2 = f'''<button onclick="openEditModal('{sname_esc_js}', '', '', '', 'main', '', '', '')" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border border-dashed border-slate-300 transition shadow-2xs truncate" title="點擊設定此服務之 GitLab 專案路徑"><span>🦊 未綁定 GitLab</span></button>'''
+
+        # 按鈕 3: 每日報告快照
+        if s.get("latest_report_file"):
+            btn_col3 = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs truncate"><span>📄 診斷報告</span></a>'''
+        else:
+            btn_col3 = '''<span class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-slate-50 text-slate-400 border border-slate-100 truncate"><span>📄 暫無報告</span></span>'''
+
+        # 按鈕 4: 即時日誌探測器
         logs_env_param = f"&environment={current_env}" if current_env else ""
         explorer_url = f"/logs?service={s['service_name']}{logs_env_param}&time_range=7d"
-
-        # 生命週期標籤 (新問題 vs 連續頑疾 vs 已知技術債)
-        life_badges = []
-        if s.get("new_issues_count", 0) > 0:
-            life_badges.append(f'<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700">🆕 {s["new_issues_count"]} 新問題</span>')
-        if s.get("chronic_issues_count", 0) > 0:
-            max_d = s.get("max_consecutive_days", 2)
-            life_badges.append(f'<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800" title="連續多日重複出現未修復">⏳ {s["chronic_issues_count"]} 連續頑疾 ({max_d}天)</span>')
-        if s.get("acknowledged_issues_count", 0) > 0:
-            life_badges.append(f'<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200" title="已標記已知待排期，Email 靜音中">👁️ {s["acknowledged_issues_count"]} 已知暫緩</span>')
-        lifecycle_badges_html = f'<div class="flex items-center gap-1 mt-1.5 flex-wrap">{" ".join(life_badges)}</div>' if life_badges else ""
-
-        # 每日歷史快照按鈕
-        if s.get("latest_report_file"):
-            snapshot_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs"><span>📄 每日快照</span></a>'''
-        else:
-            snapshot_btn = f'''<span class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-50 text-slate-400 border border-slate-100"><span>📄 暫無快照</span></span>'''
+        btn_col4 = f'''<a href="{explorer_url}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs truncate"><span>🔍 即時日誌</span></a>'''
 
         cards_html += f'''
         <div class="bg-white border border-slate-200/90 hover:border-slate-300 rounded-2xl p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between">
             <div>
-                <!-- 卡片頂部狀態列：左邊狀態徽章與呼吸燈，右邊操作工具 -->
+                <!-- 1. 卡片頂部狀態列 -->
                 <div class="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 {dot_class}"></span>
@@ -465,7 +551,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     </div>
                 </div>
 
-                <!-- 微服務專案標題與描述 -->
+                <!-- 2. 微服務專案標題與描述 -->
                 <div class="mb-4">
                     <h3 class="text-lg font-extrabold text-slate-900 tracking-tight break-all leading-snug" title="{s['service_name']}">
                         {s['service_name']}
@@ -475,8 +561,8 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     {email_badge}
                 </div>
 
-                <!-- 核心數據指標 (今日異常數、監控分支) -->
-                <div class="grid grid-cols-2 gap-3 my-4 p-3.5 bg-slate-50/80 rounded-xl border border-slate-100">
+                <!-- 3. 核心數據指標 (固定 min-h 確保高低平整) -->
+                <div class="grid grid-cols-2 gap-3 my-4 p-3.5 bg-slate-50/80 rounded-xl border border-slate-100 min-h-[92px]">
                     <div>
                         <div class="text-[11px] text-slate-400 uppercase tracking-wider font-bold">今日異常數</div>
                         <div class="text-2xl font-black {issues_color} mt-0.5 flex items-baseline gap-1">
@@ -493,7 +579,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     </div>
                 </div>
 
-                <!-- 各環境現況分佈 (7天) -->
+                <!-- 4. 各環境現況分佈 (7天) -->
                 <div class="mb-4">
                     <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center justify-between">
                         <span>運行環境分佈 (近 7 天)</span>
@@ -504,31 +590,21 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     </div>
                 </div>
 
-                <!-- 歷史報告列表 (固定高度以保持卡片水平對齊) -->
+                <!-- 5. 歷史診斷報表 (嚴格鎖定固定高度容器，保證卡片下沿對齊) -->
                 <div class="mb-5">
                     <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">歷史診斷報表</div>
-                    <div class="bg-slate-50/50 rounded-xl p-3 border border-slate-100 min-h-[98px] flex flex-col justify-center">
+                    <div class="bg-slate-50/50 rounded-xl px-3 py-2 border border-slate-100 h-[76px] flex flex-col justify-center overflow-hidden">
                         {history_list}
                     </div>
                 </div>
             </div>
 
-            <!-- 卡片底端動作按鈕 -->
-            <div class="pt-4 border-t border-slate-100 flex flex-col gap-2.5">
-                <div class="flex items-center justify-between gap-2">
-                    <div class="flex-1">
-                        {report_btn}
-                    </div>
-                    <div>
-                        {gitlab_btn}
-                    </div>
-                </div>
-                <div class="grid grid-cols-2 gap-2">
-                    {snapshot_btn}
-                    <a href="{explorer_url}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs">
-                        <span>🔍 即時日誌</span>
-                    </a>
-                </div>
+            <!-- 6. 卡片底端動作按鈕 (統一 2x2 網格，高低一致) -->
+            <div class="pt-4 border-t border-slate-100 grid grid-cols-2 gap-2">
+                {btn_col1}
+                {btn_col2}
+                {btn_col3}
+                {btn_col4}
             </div>
         </div>
         '''
@@ -631,7 +707,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SRE AI Sentinel - 全域微服務監控儀表板</title>
+    <title>微服務日誌分析平台 - 異常監控與每日報告</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
@@ -650,11 +726,11 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             <!-- 左側：品牌 Logo 與名稱 -->
             <div class="flex items-center gap-3 flex-shrink-0">
                 <a href="/" class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shadow-md shadow-indigo-600/20 text-white text-lg font-black hover:opacity-95 transition">
-                    Ω
+                    📊
                 </a>
                 <div>
-                    <h1 class="text-sm sm:text-base font-bold text-slate-900 leading-none">SRE AI Sentinel</h1>
-                    <span class="hidden md:inline text-[11px] text-slate-500 font-medium">全域多專案智能日誌分析大腦</span>
+                    <h1 class="text-sm sm:text-base font-bold text-slate-900 leading-none">微服務日誌分析平台</h1>
+                    <span class="hidden md:inline text-[11px] text-slate-500 font-medium">異常監控與每日報告</span>
                 </div>
             </div>
 
@@ -759,7 +835,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
 
     <!-- 頁尾 -->
     <footer class="border-t border-slate-200 py-6 text-center text-xs text-slate-500 bg-white">
-        SRE AI Agent & Sentinel Observability Platform ｜ Gemma 4 Native Tool-use Diagnosis
+        微服務日誌分析平台 ｜ 異常監控與每日報告
     </footer>
 
     <!-- 新增專案 Modal 彈窗 -->
@@ -797,7 +873,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                             GitLab 專案路徑
                         </label>
                         <input type="text" id="m_project_path" placeholder="例：root/isocial-rag-demo" 
-                               class="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono">
+                                class="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono">
                         <p class="text-[11px] text-slate-400 mt-1">貼 <code>root/isocial-rag-demo</code> 或整串 Clone 網址皆可。</p>
                     </div>
                     <div>
@@ -805,7 +881,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                             GitLab Project ID
                         </label>
                         <input type="number" id="m_project_id" placeholder="例：15" 
-                               class="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono">
+                                class="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono">
                     </div>
                 </div>
 
@@ -874,6 +950,17 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     </div>
                 </div>
 
+                <div class="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between">
+                    <div>
+                        <div class="text-xs font-bold text-slate-800">啟用此專案之異常 Email 告警通知</div>
+                        <p class="text-[11px] text-slate-500 mt-0.5">若取消勾選，系統巡檢時即使發生異常也不會發送 Email 騷擾負責人。</p>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="m_email_alert_enabled" checked class="sr-only peer">
+                        <div class="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                    </label>
+                </div>
+
                 <div class="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
                     <button type="button" onclick="closeAddModal()" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition">
                         取消
@@ -886,8 +973,134 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
         </div>
     </div>
 
+    <!-- 生命週期異常詳情 Modal 彈窗 (點擊標籤直接看是啥) -->
+    <div id="issuesModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white border border-slate-200 rounded-2xl max-w-2xl w-full p-6 shadow-2xl transition-all max-h-[85vh] flex flex-col">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-100 flex-shrink-0">
+                <div class="flex items-center gap-2">
+                    <span id="issuesModalIcon" class="text-xl">📋</span>
+                    <div>
+                        <h3 id="issuesModalTitle" class="text-base font-bold text-slate-900">異常問題清單</h3>
+                        <p id="issuesModalSubtitle" class="text-xs text-slate-500 mt-0.5">點擊各問題可直達日誌探測進行進一步排查</p>
+                    </div>
+                </div>
+                <button onclick="closeIssuesModal()" class="text-slate-400 hover:text-slate-600 text-lg w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 transition">✕</button>
+            </div>
+
+            <div id="issuesModalBody" class="mt-4 overflow-y-auto flex-1 space-y-3 pr-1">
+                <!-- 動態注入異常卡片清單 -->
+            </div>
+
+            <div class="pt-3 border-t border-slate-100 flex items-center justify-between flex-shrink-0 mt-4 text-xs">
+                <span class="text-slate-400 font-mono text-[11px]">SRE Sentinel Issue State Tracker</span>
+                <button type="button" onclick="closeIssuesModal()" class="px-4 py-1.5 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition shadow-2xs">
+                    關閉
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
+        // 注入所有專案問題詳情字典
+        const allIssuesData = {issues_detail_json};
+
+        function showIssuesModal(serviceName, issueType, categoryLabel) {{
+            const sData = allIssuesData[serviceName] || {{}};
+            const list = sData[issueType] || [];
+            
+            const titleEl = document.getElementById('issuesModalTitle');
+            const subEl = document.getElementById('issuesModalSubtitle');
+            const iconEl = document.getElementById('issuesModalIcon');
+            const bodyEl = document.getElementById('issuesModalBody');
+
+            let icon = '📋';
+            let badgeBg = 'bg-rose-50 text-rose-700 border-rose-200';
+            if (issueType === 'new') {{
+                icon = '🆕';
+                badgeBg = 'bg-rose-50 text-rose-700 border-rose-200';
+            }} else if (issueType === 'chronic') {{
+                icon = '⏳';
+                badgeBg = 'bg-amber-50 text-amber-800 border-amber-200';
+            }} else if (issueType === 'acknowledged') {{
+                icon = '👁️';
+                badgeBg = 'bg-slate-100 text-slate-700 border-slate-200';
+            }}
+
+            iconEl.innerText = icon;
+            titleEl.innerHTML = `<span class="font-mono text-indigo-700">${{serviceName}}</span> ｜ ${{categoryLabel}} (${{list.length}} 個)`;
+            subEl.innerText = issueType === 'acknowledged' ? '以下異常已被標記為已知技術債或排期待修，系統已對日常告警進行靜音。' : '以下為今日監控偵測到的異常類型與出現位置，可點擊跳轉查閱日誌。';
+
+            if (!list || list.length === 0) {{
+                bodyEl.innerHTML = `
+                <div class="py-12 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                    <span class="text-3xl block mb-2">✨</span>
+                    <p class="text-xs font-semibold">此微服務目前在「${{categoryLabel}}」分類下無任何紀錄</p>
+                </div>`;
+            }} else {{
+                bodyEl.innerHTML = list.map((item, idx) => {{
+                    const errName = item.error_type || 'UnknownError';
+                    const errLoc = item.error_location || 'unknown:0';
+                    const todayCnt = item.today_count || 0;
+                    const totCnt = item.total_occurrences || todayCnt;
+                    const cDays = item.consecutive_days || 1;
+                    const firstSeen = item.first_seen_date || '-';
+                    const lastSeen = item.last_seen_date || '-';
+                    const note = item.acknowledge_note ? `<div class="mt-2 text-xs bg-amber-50/80 border border-amber-200/80 text-amber-900 p-2 rounded-lg"><span class="font-bold">📝 暫緩備註：</span>${{item.acknowledge_note}}</div>` : '';
+                    
+                    const queryWord = encodeURIComponent(errName.split(/[:\s]/)[0]);
+                    const logLink = `/logs?service=${{encodeURIComponent(serviceName)}}&query=${{queryWord}}&time_range=7d`;
+
+                    return `
+                    <div class="p-3.5 bg-slate-50/80 hover:bg-slate-100/80 rounded-xl border border-slate-200 transition">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2 flex-wrap mb-1">
+                                    <span class="font-mono font-bold text-slate-900 text-xs break-all">${{idx + 1}}. ${{errName}}</span>
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${{badgeBg}} font-mono">
+                                        今日 ${{todayCnt}} 次 ｜ 累計 ${{totCnt}} 次
+                                    </span>
+                                </div>
+                                <div class="text-[11px] font-mono text-slate-500 break-all flex items-center gap-1">
+                                    <span class="text-slate-400">📍 位置:</span>
+                                    <span class="bg-white px-1.5 py-0.5 rounded border border-slate-200 text-slate-700">${{errLoc}}</span>
+                                </div>
+                                <div class="text-[11px] text-slate-400 mt-1 flex items-center gap-3">
+                                    <span>初次發現: <b class="font-mono text-slate-600">${{firstSeen}}</b></span>
+                                    <span>連續出現: <b class="font-mono text-slate-600">${{cDays}} 天</b></span>
+                                    <span>最後發生: <b class="font-mono text-slate-600">${{lastSeen}}</b></span>
+                                </div>
+                                ${{note}}
+                            </div>
+                            <a href="${{logLink}}" target="_blank" class="px-2.5 py-1 text-xs font-semibold bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg shadow-2xs transition flex-shrink-0 flex items-center gap-1" title="前往即時日誌探測器查詢此異常">
+                                <span>🔍</span>
+                                <span>查日誌</span>
+                            </a>
+                        </div>
+                    </div>
+                    `;
+                }}).join('');
+            }}
+
+            document.getElementById('issuesModal').classList.remove('hidden');
+        }}
+
+        function closeIssuesModal() {{
+            document.getElementById('issuesModal').classList.add('hidden');
+        }}
         let emailList = [];
+
+        function toggleEnvs(snameKey) {{
+            const el = document.getElementById('other-envs-' + snameKey);
+            const btn = document.getElementById('btn-toggle-envs-' + snameKey);
+            if (!el || !btn) return;
+            if (el.classList.contains('hidden')) {{
+                el.classList.remove('hidden');
+                btn.innerHTML = '<span>▴ 收起</span>';
+            }} else {{
+                el.classList.add('hidden');
+                btn.innerHTML = '<span>▾ 其他環境</span>';
+            }}
+        }}
 
         function focusEmailInput() {{
             document.getElementById('m_email_input').focus();
@@ -999,13 +1212,14 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             document.getElementById('m_log_value').value = '';
             document.getElementById('m_notification_emails').value = '';
             document.getElementById('m_email_input').value = '';
+            document.getElementById('m_email_alert_enabled').checked = true;
             document.getElementById('emailErrorTip').classList.add('hidden');
             emailList = [];
             renderEmailTags();
             document.getElementById('addModal').classList.remove('hidden');
         }}
 
-        function openEditModal(serviceName, description, projectPath, projectId, branch, logField, logValue, notificationEmails) {{
+        function openEditModal(serviceName, description, projectPath, projectId, branch, logField, logValue, notificationEmails, emailAlertEnabled) {{
             document.getElementById('modalTitle').innerText = '✏️ 編輯 / 註冊微服務配置';
             document.getElementById('m_service_name').value = serviceName;
             document.getElementById('m_service_name').readOnly = true;
@@ -1017,6 +1231,7 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             document.getElementById('m_log_field').value = logField || '';
             document.getElementById('m_log_value').value = logValue || '';
             document.getElementById('m_email_input').value = '';
+            document.getElementById('m_email_alert_enabled').checked = (emailAlertEnabled !== false);
             document.getElementById('emailErrorTip').classList.add('hidden');
             
             emailList = [];
@@ -1034,6 +1249,22 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
 
         function closeAddModal() {{
             document.getElementById('addModal').classList.add('hidden');
+        }}
+
+        async function toggleEmailAlert(serviceName) {{
+            try {{
+                const res = await fetch('/api/projects/' + encodeURIComponent(serviceName) + '/toggle_email', {{
+                    method: 'POST'
+                }});
+                const data = await res.json();
+                if (data.status === 'ok') {{
+                    window.location.reload();
+                }} else {{
+                    alert('❌ 切換告警狀態失敗: ' + (data.message || '未知錯誤'));
+                }}
+            }} catch (err) {{
+                alert('❌ 網路請求失敗: ' + err);
+            }}
         }}
 
         async function detectBranches() {{
@@ -1095,7 +1326,8 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                 branch: document.getElementById('m_branch').value.trim() || 'main',
                 log_field: document.getElementById('m_log_field').value.trim(),
                 log_value: document.getElementById('m_log_value').value.trim(),
-                notification_emails: emailList.join(', ')
+                notification_emails: emailList.join(', '),
+                email_alert_enabled: document.getElementById('m_email_alert_enabled').checked
             }};
 
             try {{
@@ -1293,7 +1525,7 @@ def render_report_view_html(service_name: str, filename: str, md_content: str) -
     </main>
 
     <footer class="border-t border-slate-200 py-6 text-center text-xs text-slate-500 bg-white">
-        SRE AI Agent & Sentinel Observability Platform
+        微服務日誌分析平台 ｜ 異常監控與每日報告
     </footer>
 
     <script>
@@ -1367,7 +1599,7 @@ def render_log_explorer_html(projects_cfg: dict, default_service: str = "", defa
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Log Explorer - SRE AI Sentinel 即時日誌探測器</title>
+    <title>即時日誌探測器 - 微服務日誌分析平台</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
@@ -1386,11 +1618,11 @@ def render_log_explorer_html(projects_cfg: dict, default_service: str = "", defa
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
             <div class="flex items-center gap-3">
                 <a href="/" class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shadow-md shadow-indigo-600/20 text-white text-lg font-black hover:opacity-95 transition">
-                    Ω
+                    📊
                 </a>
                 <div>
-                    <h1 class="text-base font-bold text-slate-900 leading-none">SRE AI Sentinel</h1>
-                    <span class="hidden md:inline text-[11px] text-slate-500 font-medium">即時日誌探測與過濾檢視</span>
+                    <h1 class="text-base font-bold text-slate-900 leading-none">微服務日誌分析平台</h1>
+                    <span class="hidden md:inline text-[11px] text-slate-500 font-medium">即時日誌探測器</span>
                 </div>
             </div>
 

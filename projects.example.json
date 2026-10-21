@@ -1,0 +1,12 @@
+﻿{
+  "example-backend": {
+    "project_path": "your-group/example-backend",
+    "project_id": 1,
+    "branch": "main",
+    "description": "後端核心微服務範例",
+    "log_field": "service_name",
+    "log_value": "example-backend",
+    "notification_emails": "sre-team@example.com",
+    "email_alert_enabled": true
+  }
+}

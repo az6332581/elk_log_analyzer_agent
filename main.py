@@ -32,6 +32,7 @@ from core.repo_manager import (
     sync_repo,
     get_project_config,
     load_projects_config,
+    save_projects_config,
     add_or_update_project,
     delete_project,
     fetch_gitlab_branches
@@ -99,20 +100,68 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL") or os.getenv("ALERT_WEBHO
 SCAN_HOURS = int(os.getenv("SCAN_HOURS", "24"))  # 巡檢掃描範圍 (預設 24 小時)
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "60"))  # 預設每 1 小時自動巡檢一次 (60 分鐘)
 
-def send_alert_notification(service_name: str, task_info: dict, report_url: str = None) -> bool:
+def send_alert_notification(service_name: str, task_info: dict, report_url: str = None, aggregated_errors: list = None) -> bool:
     """
     發送異常告警通知 (支援 Email HTML 郵件與 Discord/Slack Webhook)
     支援專案級獨立收件人 (notification_emails)，若無則回退至全域 EMAIL_RECEIVER
+    信件內容聚焦於：連鎖因果分析與具體異常錯誤清單 (Error Messages)，不再冗長贅述修復建議。
     """
     title = task_info.get("title", f"[SRE-Daily] {service_name} 異常告警")
     severity = task_info.get("severity", "High")
     correlation = task_info.get("correlation_analysis", "系統檢測到異常日誌")
-    fix_plan = task_info.get("coordinated_fix_plan", "")
     
     # 優先讀取該專案自訂的收件人，若未設定則使用全域 EMAIL_RECEIVER
     proj_conf = get_project_config(service_name) or {}
     target_emails = proj_conf.get("notification_emails") or EMAIL_RECEIVER
     
+    # 組裝具體異常錯誤訊息清單 (Error Messages Top 5)
+    errors_html = ""
+    raw_errors = aggregated_errors or task_info.get("errors") or []
+    if raw_errors:
+        err_items = []
+        for idx, err in enumerate(raw_errors[:5]):
+            ename = str(err.get("error_type") or "UnknownError")
+            eloc = str(err.get("error_location") or "unknown:0")
+            ecnt = err.get("count", 1)
+            raw_msg = str(err.get("raw_error") or err.get("message") or err.get("log") or "").strip()
+            # 若無明確 raw_error，取原始 log 摘錄
+            if not raw_msg and err.get("samples"):
+                first_s = err["samples"][0]
+                raw_msg = str(first_s.get("message") or first_s.get("log") or first_s.get("error") or "")
+            raw_msg = (raw_msg[:180] + "...") if len(raw_msg) > 180 else (raw_msg or ename)
+            raw_msg_escaped = raw_msg.replace("<", "&lt;").replace(">", "&gt;")
+
+            status_tag = ""
+            if err.get("is_new"):
+                status_tag = '<span style="background: #ffe4e6; color: #be123c; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">🆕 新問題</span>'
+            elif err.get("is_ongoing"):
+                status_tag = f'<span style="background: #fef3c7; color: #92400e; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">⏳ 連續頑疾 ({err.get("consecutive_days", 2)}天)</span>'
+
+            err_items.append(f"""
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                    <div style="font-size: 13px; font-weight: 700; color: #0f172a; font-family: monospace;">
+                        {idx + 1}. {ename}{status_tag}
+                    </div>
+                    <span style="background: #ffffff; border: 1px solid #cbd5e1; font-size: 11px; font-weight: 600; color: #475569; padding: 2px 8px; border-radius: 6px;">
+                        今日 {ecnt} 次
+                    </span>
+                </div>
+                <div style="font-size: 11px; color: #64748b; font-family: monospace; margin-bottom: 4px;">
+                    📍 代碼位置：<span style="color: #334155; font-weight: 600;">{eloc}</span>
+                </div>
+                <div style="font-size: 11px; color: #dc2626; background: #ffffff; border: 1px dashed #fca5a5; padding: 6px 10px; border-radius: 6px; font-family: monospace; word-break: break-all;">
+                    💬 {raw_msg_escaped}
+                </div>
+            </div>
+            """)
+        errors_html = f"""
+        <div style="margin-bottom: 24px;">
+            <h4 style="color: #334155; margin: 0 0 10px 0; font-size: 14px;">🚨 具體異常錯誤清單 (Top Errors)：</h4>
+            {"".join(err_items)}
+        </div>
+        """
+
     email_sent = False
     # 1. 發送 Email 通知
     if SMTP_USER and SMTP_PASSWORD and target_emails:
@@ -141,16 +190,11 @@ def send_alert_notification(service_name: str, task_info: dict, report_url: str 
                             </div>
                         </div>
 
-                        <div style="margin-bottom: 24px;">
-                            <h4 style="color: #334155; margin: 0 0 8px 0; font-size: 14px;">🛠️ 建議修復方案：</h4>
-                            <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 14px 16px; border-radius: 10px; font-size: 13px; color: #1e293b; line-height: 1.6;">
-                                {fix_plan[:350]}...
-                            </div>
-                        </div>
+                        {errors_html}
 
                         <div style="margin-top: 28px; text-align: center;">
                             <a href="{report_url or CHATOPS_BASE_URL}" target="_blank" style="display: inline-block; background: #4f46e5; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 10px; font-weight: 600; font-size: 14px; box-shadow: 0 2px 4px rgba(79,70,229,0.2);">
-                                📄 前往 Web 查看完整診斷與自癒工單 →
+                                📄 前往 Web 查看完整診斷報告與即時日誌 →
                             </a>
                         </div>
                         
@@ -475,13 +519,29 @@ async def api_test_email(service_name: str = Query(None, description="可選特�
     proj_conf = get_project_config(sname) or {}
     target = proj_conf.get("notification_emails") or EMAIL_RECEIVER or "未設定"
     
+    sample_errors = [
+        {
+            "error_type": "Slow query found (time: 3250ms)",
+            "error_location": "app/db/query.py:88",
+            "count": 12,
+            "raw_error": "Query execution time exceeded threshold (3250ms): SELECT * FROM logs WHERE id = $1",
+            "is_ongoing": True,
+            "consecutive_days": 3
+        },
+        {
+            "error_type": "QueryFailedError: relation 'users' does not exist",
+            "error_location": "src/services/user.service.ts:42",
+            "count": 2,
+            "raw_error": "error: relation 'users' does not exist at character 24",
+            "is_new": True
+        }
+    ]
     test_task = {
         "title": f"[SRE-Test] 系統告警測試信 ({sname})",
         "severity": "High",
-        "correlation_analysis": f"這是一封來自 SRE AI Sentinel 針對專案 [{sname}] 的測試告警信。當此專案發生異常時，系統會自動發送因果分析與修復計畫至專屬負責人信箱。",
-        "coordinated_fix_plan": "1. 驗證 SMTP 伺服器通訊正常。\n2. 檢查此專案指定的負責人信箱是否已成功收到通知。\n3. 無需採取任何維運動作。"
+        "correlation_analysis": f"這是一封來自 SRE AI Sentinel 針對專案 [{sname}] 的測試告警信。信件已移除修復建議，改為突顯具體出錯訊息與連鎖因果分析。",
     }
-    success = send_alert_notification(sname, test_task, report_url=CHATOPS_BASE_URL)
+    success = send_alert_notification(sname, test_task, report_url=CHATOPS_BASE_URL, aggregated_errors=sample_errors)
     if success:
         return {"status": "ok", "message": f"測試郵件已成功寄出至專案收件人: {target}"}
     else:
@@ -501,6 +561,7 @@ class ProjectCreateRequest(BaseModel):
     log_field: str = ""
     log_value: str = ""
     notification_emails: str = ""
+    email_alert_enabled: bool = True
 
 @app.post("/api/projects")
 async def api_add_project(req: ProjectCreateRequest, background_tasks: BackgroundTasks):
@@ -514,7 +575,8 @@ async def api_add_project(req: ProjectCreateRequest, background_tasks: Backgroun
         "description": req.description.strip() or "微服務應用程式",
         "log_field": req.log_field.strip(),
         "log_value": req.log_value.strip(),
-        "notification_emails": req.notification_emails.strip()
+        "notification_emails": req.notification_emails.strip(),
+        "email_alert_enabled": req.email_alert_enabled
     }
     success = add_or_update_project(sname, conf)
     if success:
@@ -522,6 +584,37 @@ async def api_add_project(req: ProjectCreateRequest, background_tasks: Backgroun
         background_tasks.add_task(sync_repo, sname)
         return {"status": "ok", "message": f"專案 [{sname}] 成功儲存，已在背景自動同步最新程式碼"}
     return {"status": "error", "message": "寫入 projects.json 失敗"}
+
+@app.post("/api/projects/{service_name}/toggle_email")
+async def api_toggle_project_email(service_name: str):
+    """
+    一鍵切換該微服務之 Email 告警通知狀態 (啟用/靜音)
+    """
+    sname = service_name.strip()
+    configs = load_projects_config()
+    if sname not in configs:
+        # 若為尚未在 projects.json 正式登記的專案，自動註冊並更新狀態
+        configs[sname] = {
+            "project_path": "",
+            "project_id": None,
+            "branch": "main",
+            "description": "微服務應用程式",
+            "log_field": "",
+            "log_value": "",
+            "notification_emails": "",
+            "email_alert_enabled": False  # 首次切換直接置為 False (靜音)
+        }
+        current_state = False
+    else:
+        current_state = configs[sname].get("email_alert_enabled", True)
+        configs[sname]["email_alert_enabled"] = not current_state
+        current_state = not current_state
+
+    saved = save_projects_config(configs)
+    if saved:
+        state_label = "開啟" if current_state else "已靜音"
+        return {"status": "ok", "email_alert_enabled": current_state, "message": f"專案 [{sname}] 異常告警信已切換為：{state_label}"}
+    return {"status": "error", "message": "儲存專案配置失敗"}
 
 @app.delete("/api/projects/{service_name}")
 async def api_delete_project(service_name: str):
@@ -1276,7 +1369,7 @@ def analyze_all_errors_holistically(
 
 請嚴格輸出符合以下 JSON 格式的診斷任務（請直接輸出純 JSON，不要夾帶任何其他文字）：
 {{
-  "title": "[SRE-Daily] {service_name} 異常全景診斷與協同修復工單 ({datetime.now().strftime('%Y-%m-%d')})",
+  "title": "📝 {service_name} 每日異常診斷 ({datetime.now().strftime('%Y-%m-%d')})",
   "severity": "High / Medium / Low",
   "correlation_analysis": "深入分析這幾個問題之間的連鎖反應、根本源頭與對應程式碼邏輯。",
   "coordinated_fix_plan": "依據上述真實程式碼片段，提供跨檔案協同修補架構與具體代碼修改建議（指出改哪一行、如何改動才能通過全量測試）。",
@@ -1520,17 +1613,37 @@ def main(hours: int = 24, index_name: str = None):
             # (E) 同步至該專案 GitLab Issue
             sync_master_report_to_gitlab(report_file, ai_analysis, project_id=proj_id)
 
-            # (F) 智慧 Email 告警推播 (具備舊疾自動靜音與惡化警報)
-            has_prod = any("prod" in str(l.get("environment") or "").lower() for l in logs)
-            should_send, reason = issue_tracker.should_send_email_alert(sname, lifecycle_summary, has_prod_error=has_prod)
-            if should_send:
-                print(f"📧 [Email 觸發告警] {reason}，發送通知郵件至負責人...")
-                report_web_url = f"{CHATOPS_BASE_URL}/report/{sname}/{os.path.basename(report_file)}"
-                send_alert_notification(sname, ai_analysis, report_url=report_web_url)
+            # (F) 智慧 Email 告警推播 (具備專案開關、舊疾自動靜音與惡化警報)
+            email_enabled = proj_conf.get("email_alert_enabled", True) if proj_conf else True
+            if not email_enabled:
+                print(f"🔕 [Email 專案靜音] 專案 [{sname}] 已由管理員設定關閉 Email 告警推播。")
             else:
-                print(f"🔕 [Email 智慧降噪] {reason}")
+                has_prod = any("prod" in str(l.get("environment") or "").lower() for l in logs)
+                should_send, reason = issue_tracker.should_send_email_alert(sname, lifecycle_summary, has_prod_error=has_prod)
+                if should_send:
+                    print(f"📧 [Email 觸發告警] {reason}，發送通知郵件至負責人...")
+                    report_web_url = f"{CHATOPS_BASE_URL}/report/{sname}/{os.path.basename(report_file)}"
+                    send_alert_notification(sname, ai_analysis, report_url=report_web_url, aggregated_errors=aggregated)
+                else:
+                    print(f"🔕 [Email 智慧降噪] {reason}")
 
-        # 3. 更新全域多專案總覽看板 index.md
+        # 3. 為其他本次無錯誤的專案同步更新活體總結 summary.md (確保每個專案都有總結)
+        all_proj_names = set(projects_cfg.keys())
+        if os.path.exists(reports_base_dir):
+            for d in os.listdir(reports_base_dir):
+                if os.path.isdir(os.path.join(reports_base_dir, d)) and not d.startswith("."):
+                    all_proj_names.add(d)
+
+        for sname in all_proj_names:
+            if sname not in service_groups:
+                update_project_summary(
+                    service_name=sname,
+                    aggregated_errors=[],
+                    ai_analysis={"severity": "Normal", "correlation_analysis": "過去時間內無新增異常日誌，服務健康運行。"},
+                    base_dir=reports_base_dir
+                )
+
+        # 4. 更新全域多專案總覽看板 index.md
         index_path = update_reports_index_dashboard(base_dir=reports_base_dir)
         print("\n" + "="*70)
         print("🎉 全域多專案分析與工單同步完成！")
@@ -1539,6 +1652,20 @@ def main(hours: int = 24, index_name: str = None):
         
     else:
         print("🎉 過去時間內無任何錯誤日誌，系統健康狀態良好！")
+        projects_cfg = load_projects_config()
+        all_proj_names = set(projects_cfg.keys())
+        if os.path.exists(reports_base_dir):
+            for d in os.listdir(reports_base_dir):
+                if os.path.isdir(os.path.join(reports_base_dir, d)) and not d.startswith("."):
+                    all_proj_names.add(d)
+
+        for sname in all_proj_names:
+            update_project_summary(
+                service_name=sname,
+                aggregated_errors=[],
+                ai_analysis={"severity": "Normal", "correlation_analysis": "過去時間內無新增異常日誌，服務健康運行。"},
+                base_dir=reports_base_dir
+            )
         update_reports_index_dashboard(base_dir=reports_base_dir)
 
 if __name__ == "__main__":

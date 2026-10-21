@@ -2,10 +2,32 @@
 from __future__ import annotations
 
 import os
+import re
 import json
 import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple
+
+
+def normalize_error_signature(text: str) -> str:
+    """
+    高精度保守正規化：
+    針對動態跳動數值（如耗時毫秒、IP、UUID、數字ID）進行標準化遮罩，
+    同時嚴格保留英文單詞語意（如 Slow query found, AES Decryption Failed 等），
+    避免將相同根本原因切碎成多個獨立指紋。
+    """
+    if not text:
+        return ""
+    # 1. 替換時間/時長：time: 187.04ms -> time: <duration>
+    s = re.sub(r"time:\s*\d+(\.\d+)?\s*(ms|s|sec)?", "time: <duration>", text, flags=re.IGNORECASE)
+    s = re.sub(r"\b\d+(\.\d+)?\s*(ms|s|sec)\b", "<duration>", s, flags=re.IGNORECASE)
+    # 2. 替換 IP 位址：192.168.1.1 -> <ip>
+    s = re.sub(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "<ip>", s)
+    # 3. 替換 UUID
+    s = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "<uuid>", s)
+    # 4. 替換 5 位數以上的純數字 ID（如訂單號、流水號）
+    s = re.sub(r"\b\d{5,}\b", "<id>", s)
+    return s.strip()
 
 
 def compute_fingerprint(service_name: str, location: str, error_type: str) -> str:
@@ -16,7 +38,8 @@ def compute_fingerprint(service_name: str, location: str, error_type: str) -> st
     sname = str(service_name or "unknown_service").strip()
     loc = str(location or "unknown:0").strip()
     etype = str(error_type or "unknown_type").strip()
-    raw_str = f"{sname}::{loc}::{etype}"
+    norm_etype = normalize_error_signature(etype)
+    raw_str = f"{sname}::{loc}::{norm_etype}"
     return hashlib.sha256(raw_str.encode("utf-8")).hexdigest()[:12]
 
 
@@ -35,13 +58,84 @@ class IssueLifecycleTracker:
         os.makedirs(proj_dir, exist_ok=True)
         return os.path.join(proj_dir, "issue_state.json")
 
+    def migrate_and_normalize_state(self, service_name: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+        """
+        自動檢查並遷移歷史未正規化的指紋與資料，
+        將舊版切碎之項目（如各種浮點數毫秒的 Slow query）合併至單一正規化指紋。
+        """
+        issues = state.get("issues", {})
+        if not issues:
+            return state, False
+
+        modified = False
+        merged_issues = {}
+
+        for fp, item in issues.items():
+            loc = str(item.get("error_location") or "unknown:0").strip()
+            raw_etype = str(item.get("error_type") or "unknown_type").strip()
+            norm_etype = normalize_error_signature(raw_etype)
+            new_fp = compute_fingerprint(service_name, loc, norm_etype)
+
+            if new_fp != fp or norm_etype != raw_etype:
+                modified = True
+
+            if new_fp in merged_issues:
+                # 進行重複項目合併
+                modified = True
+                target = merged_issues[new_fp]
+                target["total_occurrences"] = target.get("total_occurrences", 0) + item.get("total_occurrences", 0)
+                target["today_count"] = target.get("today_count", 0) + item.get("today_count", 0)
+                target["yesterday_count"] = target.get("yesterday_count", 0) + item.get("yesterday_count", 0)
+
+                # 合併每日歷史 (daily_history)
+                target_hist = target.setdefault("daily_history", {})
+                for d, cnt in item.get("daily_history", {}).items():
+                    target_hist[d] = target_hist.get(d, 0) + cnt
+
+                # 首次發現日取最早
+                d1 = target.get("first_seen_date", "")
+                d2 = item.get("first_seen_date", "")
+                if d2 and (not d1 or d2 < d1):
+                    target["first_seen_date"] = d2
+
+                # 最後發現日取最新
+                ld1 = target.get("last_seen_date", "")
+                ld2 = item.get("last_seen_date", "")
+                if ld2 and (not ld1 or ld2 > ld1):
+                    target["last_seen_date"] = ld2
+
+                # 保留已知標記
+                if item.get("is_acknowledged") or item.get("status") == "acknowledged":
+                    target["is_acknowledged"] = True
+                    target["status"] = "acknowledged"
+                    if item.get("acknowledge_note"):
+                        target["acknowledge_note"] = item.get("acknowledge_note")
+
+                # 保留根因分析快取
+                if not target.get("cached_analysis") and item.get("cached_analysis"):
+                    target["cached_analysis"] = item.get("cached_analysis")
+            else:
+                new_item = dict(item)
+                new_item["fingerprint"] = new_fp
+                new_item["error_type"] = norm_etype
+                merged_issues[new_fp] = new_item
+
+        state["issues"] = merged_issues
+        return state, modified
+
     def load_state(self, service_name: str) -> Dict[str, Any]:
         path = self._get_state_file_path(service_name)
         if not os.path.exists(path):
             return {"service_name": service_name, "issues": {}, "last_updated": ""}
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                state = json.load(f)
+            
+            # 自動執行指紋正規化遷移與清理
+            state, modified = self.migrate_and_normalize_state(service_name, state)
+            if modified:
+                self.save_state(service_name, state)
+            return state
         except Exception as e:
             print(f"⚠️ [IssueTracker] 讀取狀態檔失敗 ({service_name}): {e}")
             return {"service_name": service_name, "issues": {}, "last_updated": ""}

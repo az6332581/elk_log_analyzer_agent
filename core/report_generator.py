@@ -4,8 +4,10 @@ import os
 import re
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
+
+from core.issue_tracker import IssueLifecycleTracker
 
 def sanitize_filename(name: str) -> str:
     """去除檔名不合法字元"""
@@ -29,10 +31,15 @@ def save_or_update_master_report(
     os.makedirs(project_dir, exist_ok=True)
     report_file = os.path.join(project_dir, f"report_{date_str}.md")
     
-    title = ai_global_analysis.get("title", f"🏥 [SRE 全景診斷] {service_name} 異常分析與協同修復報告 ({date_str})")
+    raw_title = ai_global_analysis.get("title", "")
+    if not raw_title or "全景診斷" in raw_title or "[SRE" in raw_title:
+        title = f"📝 {service_name} 每日異常診斷 ({now.strftime('%Y-%m-%d')})"
+    else:
+        title = raw_title
+        
     severity = ai_global_analysis.get("severity", "High")
-    correlation_analysis = ai_global_analysis.get("correlation_analysis", "系統多項異常之全域關聯與因果鏈分析。")
-    coordinated_fix_plan = ai_global_analysis.get("coordinated_fix_plan", "跨檔案協同修復架構與代碼修補說明。")
+    correlation_analysis = ai_global_analysis.get("correlation_analysis", "系統多項異常之因果鏈與原因分析。")
+    coordinated_fix_plan = ai_global_analysis.get("coordinated_fix_plan", "代碼修補說明與修改建議。")
     sub_items = ai_global_analysis.get("sub_items", [])
     
     total_distinct_issues = len(aggregated_errors)
@@ -93,36 +100,36 @@ def save_or_update_master_report(
 """)
     
     issues_breakdown_md = "\n".join(issues_breakdown_lines)
-    sub_items_md = "\n".join(f"- [ ] {item}" for item in sub_items) if sub_items else "- [ ] 執行協同修補並通過全量 pytest 測試"
+    sub_items_md = "\n".join(f"- [ ] {item}" for item in sub_items) if sub_items else "- [ ] 執行修補並通過全量測試"
 
     master_md = f"""# {title}
 
 > **報告產生時間**：{now_formatted}  
-> **整體嚴重度**：**{severity}** ｜ **獨立問題數**：`{total_distinct_issues}` 個 ｜ **累積異常日誌**：`{total_occurrences}` 次
+> **整體健康狀態**：**{severity}** ｜ **獨立問題數**：`{total_distinct_issues}` 個 ｜ **累積異常日誌**：`{total_occurrences}` 次
 
 ---
 
-## 🌐 1. 全域連鎖因果與相互影響分析 (Correlation & Root Cause)
+## 🔍 1. 今日問題分析 (Root Cause)
 
 {correlation_analysis}
 
 ---
 
-## 🛠️ 2. 跨檔案協同修復計畫 (Coordinated Multi-File Fix Plan)
+## 🛠️ 2. 建議修復方式 (Fix Plan)
 
 {coordinated_fix_plan}
 
-### 📋 協同修復與驗證清單 (Checklist)
+### 📋 修復與驗證待辦 (Checklist)
 {sub_items_md}
 
 ---
 
-## 🔍 3. 當日所有問題詳細剖析 (Issues Breakdown)
+## 💻 3. 今日異常清單與出錯代碼 (Issues Breakdown)
 
 {issues_breakdown_md}
 
 ---
-*本報告由 SRE AI Agent 全域分析大腦自動彙整產出，支援多問題原子性協同自癒。*
+*本報告由 SRE AI Agent 自動巡檢產出。*
 """
 
     with open(report_file, "w", encoding="utf-8") as f:
@@ -261,15 +268,9 @@ def update_project_summary(
     now_formatted = now.strftime("%Y-%m-%d %H:%M:%S")
     today_str = now.strftime("%Y-%m-%d")
     
-    # 讀取狀態檔 (issue_state.json)
-    state_file = os.path.join(project_dir, "issue_state.json")
-    saved_state = {}
-    if os.path.exists(state_file):
-        try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                saved_state = json.load(f)
-        except Exception:
-            saved_state = {}
+    # 讀取狀態檔 (issue_state.json) 並自動執行指紋正規化遷移
+    tracker = IssueLifecycleTracker(base_dir=base_dir)
+    saved_state = tracker.load_state(service_name)
     issues_dict = saved_state.get("issues", {})
 
     # 1. 產生過去 7 天的日期序列 (D-6 ~ Today)
@@ -333,9 +334,10 @@ def update_project_summary(
         else:
             trend_label = "🆕 今日新發"
 
-        # 產出表格行
-        counts_cells = " | ".join(f"**{c}**" if c > 0 else "0" for c in counts_7d)
-        trend_rows.append(f"| `{etype[:38]}` | {counts_cells} | **{sum_7d}** 次 | {trend_label} |")
+        # 產出表格行：若近 7 天累計 > 0、今日有發生、或為標記待排期之技術債，才列入滾動趨勢矩陣
+        if sum_7d > 0 or today_cnt > 0 or is_ack:
+            counts_cells = " | ".join(f"**{c}**" if c > 0 else "0" for c in counts_7d)
+            trend_rows.append(f"| `{etype[:38]}` | {counts_cells} | **{sum_7d}** 次 | {trend_label} |")
 
         # 分類詳細資訊
         cached_info = saved_item.get("cached_analysis") or {}
@@ -359,7 +361,7 @@ def update_project_summary(
             acknowledged_issues.append(item_detail)
         elif today_cnt > 0 or status in ("new", "ongoing"):
             active_issues.append(item_detail)
-        else:
+        elif sum_7d > 0:
             resolved_issues.append(item_detail)
 
     # 組合表格標頭
@@ -409,7 +411,7 @@ def update_project_summary(
     resolved_md = "\n".join(res_lines) if res_lines else "*暫無已歸檔之歷史平息項目。*\n"
 
     # 最終 Markdown
-    summary_md = f"""# 📖 [SRE 活體總覽] {service_name} 系統健康與知識沉澱總表
+    summary_md = f"""# 📊 {service_name} 異常總覽與 7 天趨勢
 
 > **專案名稱**：`{service_name}`  
 > **最後更新時間**：{now_formatted}  
@@ -417,31 +419,31 @@ def update_project_summary(
 
 ---
 
-## 📊 1. 滾動 7 天按日切片趨勢矩陣 (Rolling 7-Day Trend)
+## 📊 1. 過去 7 天異常走勢 (Rolling 7-Day Trend)
 
 {trend_table_md}
 
 ---
 
-## 🧬 2. 當前活躍問題與根因字典 (Active Issues & Root Causes)
+## 🔍 2. 目前未解決問題與原因 (Active Issues)
 
 {active_md}
 
 ---
 
-## 🔕 3. 專案暫緩技術債清單 (Acknowledged Tech Debt)
-> *此清單為工程團隊已確認知情、但評估為低衝擊或排定後續有空再處理之項目，已自動關閉 Email 騷擾告警。*
+## 🔕 3. 已標記暫緩處理 (Acknowledged Issues)
+> *此清單為工程團隊已確認知情、評估暫緩處理之項目，已自動關閉 Email 告警。*
 
 {ack_md}
 
 ---
 
-## 🟢 4. 已平息歷史事件簿 (Resolved Archive)
+## 🟢 4. 近期已修復 / 平息 (Resolved)
 
 {resolved_md}
 
 ---
-*本報告為 `{service_name}` 之單一活體總 MD，每次巡檢自動增量滾動更新，不產生重複歷史檔案。*
+*本報告為 `{service_name}` 之單一總表，每次巡檢自動滾動更新。*
 """
 
     with open(summary_file, "w", encoding="utf-8") as f:
