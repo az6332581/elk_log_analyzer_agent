@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
 from openai import OpenAI
 from fastapi import FastAPI, Query, BackgroundTasks
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from core.report_generator import (
     save_or_update_master_report,
@@ -584,6 +584,23 @@ async def api_add_project(req: ProjectCreateRequest, background_tasks: Backgroun
         background_tasks.add_task(sync_repo, sname)
         return {"status": "ok", "message": f"專案 [{sname}] 成功儲存，已在背景自動同步最新程式碼"}
     return {"status": "error", "message": "寫入 projects.json 失敗"}
+
+@app.get("/api/projects/export")
+async def api_export_projects():
+    """
+    一鍵匯出當前所有受監控微服務設定檔 (projects_backup_YYYYMMDD.json 下載)
+    """
+    configs = load_projects_config()
+    content = json.dumps(configs, ensure_ascii=False, indent=2)
+    today_str = datetime.now().strftime("%Y%m%d")
+    filename = f"projects_backup_{today_str}.json"
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
 
 @app.post("/api/projects/{service_name}/toggle_email")
 async def api_toggle_project_email(service_name: str):

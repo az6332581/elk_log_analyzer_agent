@@ -11,21 +11,55 @@ GITLAB_URL = os.getenv("GITLAB_URL", "http://192.168.20.112:8929")
 GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
 REPOS_DIR = os.path.join(ROOT_DIR, "repos")
 PROJECTS_CONFIG_PATH = os.path.join(ROOT_DIR, "projects.json")
+BACKUP_CONFIG_PATH = os.path.join(ROOT_DIR, "reports", ".projects_backup.json")
 
 def load_projects_config() -> dict:
-    if not os.path.exists(PROJECTS_CONFIG_PATH):
-        return {}
-    try:
-        with open(PROJECTS_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[Repo Manager] Load projects.json failed: {e}")
-        return {}
+    data = {}
+    if os.path.exists(PROJECTS_CONFIG_PATH):
+        try:
+            with open(PROJECTS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"[Repo Manager] Load projects.json failed: {e}")
+            data = {}
+            
+    # 🛡️ 防呆自癒機制：若 projects.json 遺失或損壞，但備份檔存在，自動從備份搶救還原
+    if not data and os.path.exists(BACKUP_CONFIG_PATH):
+        try:
+            with open(BACKUP_CONFIG_PATH, "r", encoding="utf-8") as bf:
+                backup_data = json.load(bf)
+            if backup_data and isinstance(backup_data, dict):
+                print(f"🛡️ [Repo Manager] 檢測到 projects.json 異常，已自動從備份檔自癒恢復 {len(backup_data)} 個微服務設定！")
+                save_projects_config(backup_data)
+                return backup_data
+        except Exception as be:
+            print(f"[Repo Manager] 備份救援還原失敗: {be}")
+            
+    # 若當前設定存在但尚未建立備份，順手留存初始備份
+    if data and not os.path.exists(BACKUP_CONFIG_PATH):
+        try:
+            os.makedirs(os.path.dirname(BACKUP_CONFIG_PATH), exist_ok=True)
+            with open(BACKUP_CONFIG_PATH, "w", encoding="utf-8") as bf:
+                json.dump(data, bf, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    return data
 
 def save_projects_config(configs: dict) -> bool:
     try:
         with open(PROJECTS_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(configs, f, ensure_ascii=False, indent=2)
+            
+        # 🛡️ 雙重保險：每次變更自動鏡像備份至 reports/.projects_backup.json
+        if configs:
+            try:
+                os.makedirs(os.path.dirname(BACKUP_CONFIG_PATH), exist_ok=True)
+                with open(BACKUP_CONFIG_PATH, "w", encoding="utf-8") as bf:
+                    json.dump(configs, bf, ensure_ascii=False, indent=2)
+            except Exception as be:
+                print(f"[Repo Manager] Warning: mirror backup failed: {be}")
+                
         return True
     except Exception as e:
         print(f"[Repo Manager] Save projects.json failed: {e}")

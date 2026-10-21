@@ -18,6 +18,8 @@ ENV/
 # 本地專案配置 (包含私人 Email 與內部路徑，上傳使用 projects.example.json)
 projects.json
 !projects.example.json
+*.backup.json
+projects_backup_*.json
 
 # 專案異常生命週期運行狀態快取
 reports/**/issue_state.json

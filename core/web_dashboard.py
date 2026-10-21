@@ -764,6 +764,10 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     <span>➕</span>
                     <span>新增專案</span>
                 </button>
+                <a href="/api/projects/export" download class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold border border-slate-200 transition shadow-2xs active:scale-95 whitespace-nowrap" title="一鍵下載所有受監控微服務的設定 JSON 備份檔">
+                    <span>📥</span>
+                    <span>匯出設定</span>
+                </a>
                 <button onclick="testEmailAlert()" title="發送一封測試告警信以驗證 Email 設定" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold border border-slate-200 transition shadow-2xs active:scale-95 whitespace-nowrap">
                     <span>📧</span>
                     <span>測試信</span>
