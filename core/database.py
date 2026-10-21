@@ -132,6 +132,8 @@ class Diagnosis(Base):
     root_cause_summary = Column(Text, default="")
     coordinated_fix_plan = Column(Text, default="")
     sub_items_json = Column(Text, default="")
+    markdown_content = Column(Text, nullable=True)  # 完整 Markdown 報告文字，無須儲存為磁碟 .md 檔案
+    raw_json = Column(Text, nullable=True)          # 原始錯誤清單與診斷上下文 JSON
     created_at = Column(DateTime, default=datetime.now)
 
     __table_args__ = (

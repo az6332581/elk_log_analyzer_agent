@@ -148,6 +148,8 @@ def save_or_update_master_report(
         diag.root_cause_summary = correlation_analysis
         diag.coordinated_fix_plan = coordinated_fix_plan
         diag.sub_items_json = json.dumps(sub_items, ensure_ascii=False) if sub_items else "[]"
+        diag.markdown_content = master_md
+        diag.raw_json = json.dumps(aggregated_errors, ensure_ascii=False)
         session.commit()
         session.close()
     except Exception as dbe:

@@ -137,43 +137,63 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                     "env_stats": es_env_stats.get(sname, {})
                 }
                 
-            report_files = []
-            for file in os.listdir(sub_path):
-                if file.startswith("report_") and file.endswith(".md"):
-                    fpath = os.path.join(sub_path, file)
-                    try:
-                        with open(fpath, "r", encoding="utf-8") as rf:
-                            txt = rf.read()
-                        sev_m = re.search(r"\*\*整體嚴重度\*\*：\*\*(.*?)\*\*", txt)
-                        sev = sev_m.group(1).strip() if sev_m else "High"
-                        time_m = re.search(r"\*\*報告產生時間\*\*：(.*?)(?:\s|\n)", txt)
-                        gtime = time_m.group(1).strip() if time_m else "-"
-                        issues_m = re.search(r"\*\*獨立問題數\*\*：`(\d+)` 個", txt)
-                        icnt = int(issues_m.group(1)) if issues_m else 0
-                        
-                        report_files.append({
-                            "file": file,
-                            "severity": sev,
-                            "time": gtime,
-                            "issues": icnt
-                        })
-                    except Exception:
-                        pass
-                        
-            report_files.sort(key=lambda x: x["file"], reverse=True)
-            services[sname]["total_reports"] = len(report_files)
-            services[sname]["history"] = report_files
-            
             today_str = datetime.now().strftime("%Y%m%d")
             today_date_str = datetime.now().strftime("%Y-%m-%d")
+
+            # 🛡️ 優先從資料庫查詢該專案所有歷史診斷 (Diagnosis)
+            db_diagnoses = []
+            try:
+                from core.database import get_db_session, Diagnosis
+                d_sess = get_db_session()
+                diags = d_sess.query(Diagnosis).filter_by(service_name=sname).order_by(Diagnosis.report_date.desc()).all()
+                for d in diags:
+                    cnt = 0
+                    if d.raw_json:
+                        try:
+                            cnt = len(json.loads(d.raw_json))
+                        except Exception:
+                            cnt = 0
+                    db_diagnoses.append({
+                        "file": f"report_{d.report_date.replace('-', '')}.md",
+                        "severity": d.severity or "Normal",
+                        "time": d.report_date,
+                        "issues": cnt
+                    })
+                d_sess.close()
+            except Exception as dbe:
+                print(f"[Dashboard] DB query diagnoses failed (fallback): {dbe}")
+
+            report_files = []
+            if db_diagnoses:
+                report_files = db_diagnoses
+            elif os.path.exists(sub_path):
+                # 降級從實體檔案讀取
+                for file in os.listdir(sub_path):
+                    if file.startswith("report_") and file.endswith(".md"):
+                        fpath = os.path.join(sub_path, file)
+                        try:
+                            with open(fpath, "r", encoding="utf-8") as rf:
+                                txt = rf.read()
+                            sev_m = re.search(r"\*\*整體嚴重度\*\*：\*\*(.*?)\*\*", txt)
+                            sev = sev_m.group(1).strip() if sev_m else "High"
+                            time_m = re.search(r"\*\*報告產生時間\*\*：(.*?)(?:\s|\n)", txt)
+                            gtime = time_m.group(1).strip() if time_m else "-"
+                            issues_m = re.search(r"\*\*獨立問題數\*\*：`(\d+)` 個", txt)
+                            icnt = int(issues_m.group(1)) if issues_m else 0
+                            report_files.append({"file": file, "severity": sev, "time": gtime, "issues": icnt})
+                        except Exception:
+                            pass
+                report_files.sort(key=lambda x: x["file"], reverse=True)
+
+            services[sname]["total_reports"] = len(report_files)
+            services[sname]["history"] = report_files
+            services[sname]["has_summary"] = True
 
             if report_files:
                 lat = report_files[0]
                 services[sname]["latest_report_file"] = lat["file"]
                 services[sname]["latest_time"] = lat["time"]
                 
-                # 判斷最新報告是否為「今天」產生
-                # 報告檔名通常為 report_YYYYMMDD.md，或是時間字串以 YYYY-MM-DD 開頭
                 is_today_report = (
                     f"report_{today_str}" in lat["file"] or 
                     (lat["time"] and lat["time"].startswith(today_date_str))
@@ -183,35 +203,18 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                 if is_today_report:
                     services[sname]["issues_count"] = lat["issues"]
                     services[sname]["severity"] = lat["severity"]
-                    if lat["severity"] == "High":
+                    if lat["severity"] == "High" or lat["severity"] == "Critical":
                         services[sname]["status"] = "CRITICAL"
-                    elif lat["severity"] == "Medium":
+                    elif lat["severity"] == "Medium" or lat["severity"] == "Warning":
                         services[sname]["status"] = "WARNING"
                     else:
                         services[sname]["status"] = "HEALTHY"
                 else:
-                    # 今天尚無報告或今天無新異常，今日問題數歸零，服務狀態為健康
                     services[sname]["issues_count"] = 0
                     services[sname]["severity"] = "Normal"
                     services[sname]["status"] = "HEALTHY"
 
-            # 檢查是否存在活體總結報告 summary.md，若尚無則即時自動初始化
-            summary_path = os.path.join(sub_path, "summary.md")
-            if not os.path.exists(summary_path):
-                try:
-                    from core.report_generator import update_project_summary
-                    update_project_summary(
-                        service_name=sname,
-                        aggregated_errors=[],
-                        ai_analysis={"severity": "Normal", "correlation_analysis": "過去時間內無新增異常，服務運作良好。"},
-                        base_dir=base_dir
-                    )
-                except Exception as _ex:
-                    pass
-            services[sname]["has_summary"] = os.path.exists(summary_path)
-
-            # 讀取該微服務專屬之生命週期追蹤檔 (issue_state.json)
-            state_file = os.path.join(sub_path, "issue_state.json")
+            # 🛡️ 優先從資料庫 (Issue 表) 統計生命週期狀態
             new_cnt = 0
             chronic_cnt = 0
             ack_cnt = 0
@@ -219,28 +222,32 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
             new_list = []
             chronic_list = []
             ack_list = []
-            if os.path.exists(state_file):
-                try:
-                    with open(state_file, "r", encoding="utf-8") as sf:
-                        s_data = json.load(sf)
-                    for fp, it in s_data.get("issues", {}).items():
+
+            db_issues_found = False
+            try:
+                from core.database import get_db_session, Issue
+                i_sess = get_db_session()
+                db_issues = i_sess.query(Issue).filter_by(service_name=sname).all()
+                if db_issues:
+                    db_issues_found = True
+                    for it in db_issues:
                         issue_info = {
-                            "fp": fp,
-                            "error_type": str(it.get("error_type") or "UnknownError"),
-                            "error_location": str(it.get("error_location") or "unknown:0"),
-                            "today_count": it.get("today_count", 0),
-                            "total_occurrences": it.get("total_occurrences", 0),
-                            "consecutive_days": it.get("consecutive_days", 1),
-                            "first_seen_date": it.get("first_seen_date", ""),
-                            "last_seen_date": it.get("last_seen_date", ""),
-                            "status": it.get("status", "new"),
-                            "acknowledge_note": it.get("acknowledge_note", "")
+                            "fp": it.fingerprint,
+                            "error_type": str(it.error_type or "UnknownError"),
+                            "error_location": str(it.error_location or "unknown:0"),
+                            "today_count": it.today_count or 0,
+                            "total_occurrences": it.total_occurrences or 0,
+                            "consecutive_days": it.consecutive_days or 1,
+                            "first_seen_date": it.first_seen_date or "",
+                            "last_seen_date": it.last_seen_date or "",
+                            "status": it.status or "new",
+                            "acknowledge_note": it.acknowledge_note or ""
                         }
-                        if it.get("status") == "acknowledged" or it.get("is_acknowledged"):
+                        if it.status == "acknowledged":
                             ack_cnt += 1
                             ack_list.append(issue_info)
-                        elif it.get("status") in ("new", "ongoing") and it.get("last_seen_date") == today_date_str:
-                            c_days = it.get("consecutive_days", 1)
+                        elif it.status in ("new", "ongoing") and it.last_seen_date == today_date_str:
+                            c_days = it.consecutive_days or 1
                             if c_days > 1:
                                 chronic_cnt += 1
                                 max_days = max(max_days, c_days)
@@ -248,8 +255,45 @@ def get_services_health(reports_base_dir: str = "reports", target_env: str = Non
                             else:
                                 new_cnt += 1
                                 new_list.append(issue_info)
-                except Exception:
-                    pass
+                i_sess.close()
+            except Exception as ie:
+                print(f"[Dashboard] DB query issues failed (fallback): {ie}")
+
+            # 若 DB 查無紀錄，降級讀取實體 issue_state.json
+            if not db_issues_found:
+                state_file = os.path.join(sub_path, "issue_state.json")
+                if os.path.exists(state_file):
+                    try:
+                        with open(state_file, "r", encoding="utf-8") as sf:
+                            s_data = json.load(sf)
+                        for fp, it in s_data.get("issues", {}).items():
+                            issue_info = {
+                                "fp": fp,
+                                "error_type": str(it.get("error_type") or "UnknownError"),
+                                "error_location": str(it.get("error_location") or "unknown:0"),
+                                "today_count": it.get("today_count", 0),
+                                "total_occurrences": it.get("total_occurrences", 0),
+                                "consecutive_days": it.get("consecutive_days", 1),
+                                "first_seen_date": it.get("first_seen_date", ""),
+                                "last_seen_date": it.get("last_seen_date", ""),
+                                "status": it.get("status", "new"),
+                                "acknowledge_note": it.get("acknowledge_note", "")
+                            }
+                            if it.get("status") == "acknowledged" or it.get("is_acknowledged"):
+                                ack_cnt += 1
+                                ack_list.append(issue_info)
+                            elif it.get("status") in ("new", "ongoing") and it.get("last_seen_date") == today_date_str:
+                                c_days = it.get("consecutive_days", 1)
+                                if c_days > 1:
+                                    chronic_cnt += 1
+                                    max_days = max(max_days, c_days)
+                                    chronic_list.append(issue_info)
+                                else:
+                                    new_cnt += 1
+                                    new_list.append(issue_info)
+                    except Exception:
+                        pass
+
             services[sname]["new_issues_count"] = new_cnt
             services[sname]["chronic_issues_count"] = chronic_cnt
             services[sname]["acknowledged_issues_count"] = ack_cnt

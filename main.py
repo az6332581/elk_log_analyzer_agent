@@ -372,12 +372,60 @@ async def dashboard_home(env: str = Query(None, description="過濾指定環境 
 
 @app.get("/report/{service_name}/{filename}", response_class=HTMLResponse)
 async def view_report(service_name: str, filename: str):
-    reports_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
-    file_path = os.path.join(reports_base_dir, service_name, filename)
-    if not os.path.exists(file_path):
-        return HTMLResponse(content="<div style='font-family: sans-serif; padding: 40px; text-align: center;'><h2>❌ 找不到該診斷報告檔案</h2><p><a href='/'>返回儀表板</a></p></div>", status_code=404)
-    with open(file_path, "r", encoding="utf-8") as f:
-        md_content = f.read()
+    """
+    動態報告渲染器：
+    優先從資料庫 Diagnosis 讀取 Markdown 渲染；若請求 summary.md 則動態即時產生，
+    完全不依賴硬碟上是否真實存在實體 .md 檔案。
+    """
+    md_content = None
+
+    # 1. 處理活體總表 summary.md
+    if filename == "summary.md":
+        try:
+            from core.report_generator import update_project_summary
+            # 動態由資料庫聚合最新狀態
+            temp_path = update_project_summary(service_name=service_name, aggregated_errors=[], ai_analysis={"severity": "Normal"})
+            if os.path.exists(temp_path):
+                with open(temp_path, "r", encoding="utf-8") as f:
+                    md_content = f.read()
+        except Exception as e:
+            print(f"[ViewReport] generate dynamic summary.md failed: {e}")
+
+    # 2. 處理每日報告 report_YYYYMMDD.md
+    elif filename.startswith("report_") and filename.endswith(".md"):
+        date_part = filename.replace("report_", "").replace(".md", "")
+        # 將 YYYYMMDD 格式化為 YYYY-MM-DD
+        if len(date_part) == 8 and date_part.isdigit():
+            date_fmt = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+            try:
+                from core.database import get_db_session, Diagnosis
+                session = get_db_session()
+                diag = session.query(Diagnosis).filter_by(service_name=service_name, report_date=date_fmt).first()
+                if diag and diag.markdown_content:
+                    md_content = diag.markdown_content
+                elif diag and diag.root_cause_summary:
+                    # 若為舊版遷移無完整 markdown，即時組裝簡潔診斷
+                    sub_items = json.loads(diag.sub_items_json) if diag.sub_items_json else []
+                    chk = "\n".join(f"- [ ] {it}" for it in sub_items)
+                    md_content = f"# {diag.title}\n\n> **日期**：{diag.report_date} ｜ **等級**：{diag.severity}\n\n## 🔍 問題分析\n{diag.root_cause_summary}\n\n## 🛠️ 修復建議\n{diag.coordinated_fix_plan}\n\n### 📋 驗證清單\n{chk}\n"
+                session.close()
+            except Exception as dbe:
+                print(f"[ViewReport] query DB diagnosis failed: {dbe}")
+
+    # 3. 降級讀取實體檔案 (若上述未取得)
+    if not md_content:
+        reports_base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+        file_path = os.path.join(reports_base_dir, service_name, filename)
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    md_content = f.read()
+            except Exception:
+                pass
+
+    if not md_content:
+        return HTMLResponse(content="<div style='font-family: sans-serif; padding: 40px; text-align: center;'><h2>❌ 找不到該診斷報告或資料庫紀錄</h2><p><a href='/'>返回儀表板</a></p></div>", status_code=404)
+
     return render_report_view_html(service_name, filename, md_content)
 
 @app.get("/logs", response_class=HTMLResponse)
