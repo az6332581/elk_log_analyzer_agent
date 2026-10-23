@@ -409,55 +409,22 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
         else:
             edit_btn = f'''<button onclick="openEditModal('{sname_esc_js}', '', '', '', 'main', '', '', '', true)" title="此服務為 ELK 自動探測發現，點此補齊 GitLab 與監控配置" class="w-7 h-7 flex items-center justify-center text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition border border-indigo-200 text-xs shadow-2xs font-bold">✏️</button>'''
 
-        # 3. 日誌規則 Badge (未設定時顯示統一灰色邊框佔位符，嚴防高度凹陷)
-        if s.get("log_field"):
-            val_text = s.get("log_value") or s["service_name"]
-            rule_badge = f'''
-            <div class="mt-2 min-h-[26px] flex items-center">
-                <span class="inline-flex items-center gap-1.5 max-w-full text-[11px] bg-slate-50 text-slate-600 px-2.5 py-0.5 rounded-md border border-slate-200 font-mono truncate" title="日誌識別規則: {s['log_field']} = {val_text}">
-                    <span class="text-slate-400 font-sans font-semibold">日誌:</span>
-                    <span class="font-bold text-slate-800 truncate">{s["log_field"]} = "{val_text}"</span>
-                </span>
-            </div>'''
-        else:
-            rule_badge = '''
-            <div class="mt-2 min-h-[26px] flex items-center">
-                <span class="inline-flex items-center gap-1.5 max-w-full text-[11px] text-slate-400 px-2.5 py-0.5 rounded-md border border-dashed border-slate-200 font-mono truncate" title="未指定特殊欄位，預設以 service_name 進行日誌比對">
-                    <span class="font-sans font-medium">日誌:</span>
-                    <span class="truncate">預設 service_name 欄位比對</span>
-                </span>
-            </div>'''
-
-        # 3-2. Email 告警開關與通知收件人 Badge (支援一鍵切換啟用/靜音)
+        # 3. Email 告警精緻鈴鐺圖標 (放置於卡片右上角，極致節省垂直空間)
         if email_alert_enabled:
-            toggle_pill = f'''<button type="button" onclick="toggleEmailAlert('{sname_esc_js}')" title="點擊將此專案之異常 Email 告警靜音" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 hover:bg-rose-100 hover:text-rose-700 border border-emerald-200 transition cursor-pointer flex-shrink-0"><span>🟢 告警已開啟</span></button>'''
+            email_tip = f"告警通知已啟用 (收件人: {s.get('notification_emails') or '全域預設'})，點擊切換為靜音"
+            email_bell_btn = f'''<button type="button" onclick="toggleEmailAlert('{sname_esc_js}')" title="{email_tip}" class="w-7 h-7 flex items-center justify-center text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition border border-emerald-200/60 text-xs cursor-pointer shadow-2xs">🔔</button>'''
         else:
-            toggle_pill = f'''<button type="button" onclick="toggleEmailAlert('{sname_esc_js}')" title="點擊恢復發送異常 Email 告警" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600 hover:bg-emerald-100 hover:text-emerald-800 border border-slate-300 transition cursor-pointer flex-shrink-0"><span>🔕 告警已靜音</span></button>'''
+            email_tip = "告警通知目前已靜音，點擊恢復發送"
+            email_bell_btn = f'''<button type="button" onclick="toggleEmailAlert('{sname_esc_js}')" title="{email_tip}" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition border border-slate-200 text-xs cursor-pointer shadow-2xs">🔕</button>'''
 
-        if s.get("notification_emails"):
-            email_badge = f'''
-            <div class="mt-1.5 min-h-[28px] flex items-center justify-between text-[11px] text-indigo-700 bg-indigo-50/70 border border-indigo-200/60 px-2 py-0.5 rounded-md gap-1" title="異常通知收件人: {s['notification_emails']}">
-                <div class="flex items-center gap-1.5 min-w-0">
-                    {toggle_pill}
-                    <span class="truncate font-mono">{s['notification_emails']}</span>
-                </div>
-                <button onclick="testEmailAlert('{sname_esc_js}')" title="點此發送測試信給該專案收件人" class="text-[10px] text-indigo-600 hover:text-indigo-900 font-semibold ml-1 flex-shrink-0 hover:underline">
-                    測試
-                </button>
-            </div>'''
+        # GitLab 精緻徽章 (若未設定則顯示引導綁定提示)
+        if s["project_path"]:
+            gl_link = f"{gitlab_url.rstrip('/')}/{s['project_path']}"
+            gitlab_badge = f'''<a href="{gl_link}" target="_blank" title="前往 GitLab 倉庫: {s['project_path']}" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 transition"><span>🦊</span><span class="font-mono text-[10px]">#{s['project_id'] or '-'}</span></a>'''
         else:
-            email_badge = f'''
-            <div class="mt-1.5 min-h-[28px] flex items-center justify-between text-[11px] text-slate-500 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded-md gap-1" title="未指定獨立收件人，使用系統全域預設">
-                <div class="flex items-center gap-1.5 min-w-0">
-                    {toggle_pill}
-                    <span class="truncate text-slate-400">使用全域收件人</span>
-                </div>
-                <button onclick="testEmailAlert('{sname_esc_js}')" title="點此測試寄送給全域預設收件人" class="text-[10px] text-slate-500 hover:text-slate-800 font-medium ml-1 flex-shrink-0 hover:underline">
-                    測試
-                </button>
-            </div>'''
+            gitlab_badge = f'''<button onclick="openEditModal('{sname_esc_js}', '{desc_escaped}', '', '', '{s['branch']}', '{log_f_escaped}', '{log_v_escaped}', '{emails_escaped}', {email_status_js})" title="點擊設定 GitLab 專案路徑" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 border border-dashed border-slate-300 transition"><span>🦊 未綁定</span></button>'''
 
-        # 4. 生命週期標籤按鈕化 (支援點擊查看清單，無問題時給予綠色標籤佔位保證高度齊平)
+        # 4. 生命週期標籤按鈕化
         life_badges = []
         if s.get("new_issues_count", 0) > 0:
             life_badges.append(f'''<button type="button" onclick="showIssuesModal('{sname_esc_js}', 'new', '今日新發問題')" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 hover:bg-rose-200 text-rose-700 border border-rose-200 transition cursor-pointer" title="點擊查看今日新發問題清單">🆕 {s["new_issues_count"]} 新問題 ↗</button>''')
@@ -468,13 +435,15 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
             life_badges.append(f'''<button type="button" onclick="showIssuesModal('{sname_esc_js}', 'acknowledged', '已知暫緩問題 (Email 靜音)')" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 transition cursor-pointer" title="已標記已知待排期，點擊查看清單與暫緩原因">👁️ {s["acknowledged_issues_count"]} 已知暫緩 ↗</button>''')
         
         if not life_badges:
-            lifecycle_badges_html = '<div class="flex items-center gap-1 mt-1.5 min-h-[22px]"><span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-100">🟢 今日無新增異常</span></div>'
+            lifecycle_badges_html = '<span class="inline-flex items-center px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">🟢 今日無新增異常</span>'
         else:
-            lifecycle_badges_html = f'<div class="flex items-center gap-1 mt-1.5 min-h-[22px] flex-wrap">{" ".join(life_badges)}</div>'
+            lifecycle_badges_html = f'<div class="flex items-center justify-end gap-1.5 flex-wrap">{" ".join(life_badges)}</div>'
 
         issues_color = "text-rose-600" if s["issues_count"] > 0 else "text-emerald-600"
+        issues_icon = "🔴" if s["issues_count"] > 0 else "🟢"
+        issues_bg_light = "bg-rose-100/70" if s["issues_count"] > 0 else "bg-emerald-100/70"
 
-        # 5. 各環境日誌分佈膠囊標籤 (預設突顯正式環境，其餘環境折疊按需展開)
+        # 5. 各環境日誌分佈膠囊標籤
         env_stats = s.get("env_stats", {})
         prod_badges = []
         other_badges = []
@@ -530,14 +499,14 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
         else:
             env_badges_html = '<span class="text-[11px] text-slate-400 font-mono">近 7 天無各環境日誌</span>'
 
-        # 6. 歷史診斷報表 (固定高度容器 h-[76px]，確保所有卡片嚴格齊平)
+        # 6. 歷史診斷報表列表 (收納於折疊抽屜內)
         history_list = ""
         if s["history"]:
-            for h in s["history"][:2]:
+            for h in s["history"][:3]:
                 h_date = h['time'].split(' ')[0] if ' ' in h['time'] else h['time']
-                h_icon = "🔴" if h['severity'] == "High" else "🟡"
+                h_icon = "🔴" if h['severity'] in ("High", "Critical") else "🟡"
                 history_list += f'''
-                <div class="flex items-center justify-between text-xs py-1 border-b border-slate-100 last:border-0 hover:bg-white/80 px-1 rounded transition">
+                <div class="flex items-center justify-between text-xs py-1.5 border-b border-slate-100 last:border-0 hover:bg-white/80 px-1 rounded transition">
                     <a href="/report/{s['service_name']}/{h['file']}" class="text-indigo-600 hover:text-indigo-800 hover:underline truncate max-w-[150px] font-medium flex items-center gap-1 text-[11px]">
                         <span>{h_icon}</span>
                         <span class="truncate">{h['file']}</span>
@@ -548,35 +517,25 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
         else:
             history_list = '<p class="text-xs text-slate-400 py-2 text-center flex items-center justify-center gap-1"><span>📄</span><span>尚無歷史診斷報告紀錄</span></p>'
 
-        # 7. 底部 4 顆操作按鈕 (採用 2x2 統一網格 grid grid-cols-2，結構完全相同)
-        # 按鈕 1: 專案總結 / 今日診斷
+        # 7. 底部雙主力動作按鈕 (1:1 兩欄網格，清晰大器)
+        # 按鈕 1: 深入分析 (優先跳轉專案總結 summary.md 或今日/最新診斷)
         if s.get("has_summary"):
-            btn_col1 = f'''<a href="/report/{s['service_name']}/summary.md" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm active:scale-95 truncate"><span>📊 專案總結</span></a>'''
+            primary_btn = f'''<a href="/report/{s['service_name']}/summary.md" class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm active:scale-95 truncate"><span>📋 深入分析總表</span></a>'''
         elif s.get("latest_report_file"):
             if s.get("is_today_report"):
-                btn_col1 = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm active:scale-95 truncate"><span>📝 今日診斷</span></a>'''
+                primary_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm active:scale-95 truncate"><span>📋 今日診斷報告</span></a>'''
             else:
-                btn_col1 = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs active:scale-95 truncate"><span>📝 最新診斷</span></a>'''
+                primary_btn = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold rounded-xl bg-slate-700 hover:bg-slate-800 text-white transition shadow-sm active:scale-95 truncate"><span>📋 最新診斷報告</span></a>'''
         else:
-            btn_col1 = '''<div class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-100 truncate"><span>🟢 運行正常</span></div>'''
+            primary_btn = '''<div class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200 truncate"><span>🟢 系統運行健康</span></div>'''
 
-        # 按鈕 2: GitLab 連結或綁定提示
-        if s["project_path"]:
-            gl_link = f"{gitlab_url.rstrip('/')}/{s['project_path']}"
-            btn_col2 = f'''<a href="{gl_link}" target="_blank" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition shadow-2xs truncate"><span>🦊 GitLab</span><span class="text-[10px] text-slate-400 font-mono">#{s['project_id'] or '-'}</span></a>'''
-        else:
-            btn_col2 = f'''<button onclick="openEditModal('{sname_esc_js}', '', '', '', 'main', '', '', '')" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border border-dashed border-slate-300 transition shadow-2xs truncate" title="點擊設定此服務之 GitLab 專案路徑"><span>🦊 未綁定 GitLab</span></button>'''
-
-        # 按鈕 3: 每日報告快照
-        if s.get("latest_report_file"):
-            btn_col3 = f'''<a href="/report/{s['service_name']}/{s['latest_report_file']}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs truncate"><span>📄 診斷報告</span></a>'''
-        else:
-            btn_col3 = '''<span class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-slate-50 text-slate-400 border border-slate-100 truncate"><span>📄 暫無報告</span></span>'''
-
-        # 按鈕 4: 即時日誌探測器
+        # 按鈕 2: 即時日誌探測器
         logs_env_param = f"&environment={current_env}" if current_env else ""
         explorer_url = f"/logs?service={s['service_name']}{logs_env_param}&time_range=7d"
-        btn_col4 = f'''<a href="{explorer_url}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs truncate"><span>🔍 即時日誌</span></a>'''
+        secondary_btn = f'''<a href="{explorer_url}" class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-bold rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition border border-slate-200 shadow-2xs active:scale-95 truncate"><span>🔍 即時日誌探測</span></a>'''
+
+        # 主標題：顯示中文說明 (無中文則以服務名稱回退)
+        main_title = s['description'] or s['service_name']
 
         cards_html += f'''
         <div class="bg-white border border-slate-200/90 hover:border-slate-300 rounded-2xl p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between">
@@ -589,43 +548,48 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                             {status_text}
                         </span>
                     </div>
-                    <div class="flex items-center gap-1">
+                    <div class="flex items-center gap-1.5">
+                        {email_bell_btn}
                         {edit_btn}
                         {delete_btn}
                     </div>
                 </div>
 
-                <!-- 2. 微服務專案標題與描述 -->
+                <!-- 2. 微服務專案標題與描述 (中文說明在頂，服務名稱、GitLab、分支齊平在上方徽章列) -->
                 <div class="mb-4">
-                    <h3 class="text-lg font-extrabold text-slate-900 tracking-tight break-all leading-snug" title="{s['service_name']}">
-                        {s['service_name']}
+                    <h3 class="text-lg font-black text-slate-900 tracking-tight break-all leading-snug" title="{main_title}">
+                        {main_title}
                     </h3>
-                    <p class="text-xs text-slate-500 mt-1 line-clamp-1 leading-relaxed">{s['description'] or '微服務專案'}</p>
-                    {rule_badge}
-                    {email_badge}
+                    <div class="mt-2 flex items-center gap-1.5 flex-wrap">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-xs font-mono font-semibold border border-slate-200">
+                            ⚙️ {s['service_name']}
+                        </span>
+                        {gitlab_badge}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50/80 text-indigo-700 text-xs font-mono font-semibold border border-indigo-200/70" title="當前監控分支: {s['branch']}">
+                            ⎇ {s['branch']}
+                        </span>
+                    </div>
                 </div>
 
-                <!-- 3. 核心數據指標 (固定 min-h 確保高低平整) -->
-                <div class="grid grid-cols-2 gap-3 my-4 p-3.5 bg-slate-50/80 rounded-xl border border-slate-100 min-h-[92px]">
-                    <div>
-                        <div class="text-[11px] text-slate-400 uppercase tracking-wider font-bold">今日異常數</div>
-                        <div class="text-2xl font-black {issues_color} mt-0.5 flex items-baseline gap-1">
-                            {s['issues_count']}
-                            <span class="text-xs font-normal text-slate-500">個問題</span>
+                <!-- 3. 獨立核心健康指標看板 (紅色標示區：獨立卡中卡模組設計) -->
+                <div class="my-3.5 p-3 rounded-xl bg-slate-50/90 border border-slate-200/90 shadow-2xs flex items-center justify-between gap-2 min-h-[50px]">
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg {issues_bg_light} text-sm font-bold flex-shrink-0">
+                            {issues_icon}
+                        </span>
+                        <div class="flex items-baseline gap-1">
+                            <span class="{issues_color} font-black text-lg leading-none">{s['issues_count']}</span>
+                            <span class="text-slate-700 font-bold text-xs">個異常問題</span>
                         </div>
+                    </div>
+                    <div class="flex items-center justify-end gap-1.5 flex-wrap">
                         {lifecycle_badges_html}
                     </div>
-                    <div>
-                        <div class="text-[11px] text-slate-400 uppercase tracking-wider font-bold">監控分支</div>
-                        <div class="text-sm font-semibold text-slate-700 mt-1 flex items-center gap-1">
-                            <span class="px-2 py-0.5 bg-white border border-slate-200 text-indigo-700 rounded-md text-xs font-mono font-semibold shadow-2xs">⎇ {s['branch']}</span>
-                        </div>
-                    </div>
                 </div>
 
-                <!-- 4. 各環境現況分佈 (7天) -->
-                <div class="mb-4">
-                    <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                <!-- 4. 各環境現況分佈 (近 7 天) -->
+                <div class="mb-3.5">
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center justify-between">
                         <span>運行環境分佈 (近 7 天)</span>
                         <span class="text-[10px] font-normal text-slate-400 font-mono">點擊直接探測 ↗</span>
                     </div>
@@ -634,21 +598,27 @@ def render_dashboard_html(data: dict, gitlab_url: str = "http://192.168.20.112:8
                     </div>
                 </div>
 
-                <!-- 5. 歷史診斷報表 (嚴格鎖定固定高度容器，保證卡片下沿對齊) -->
-                <div class="mb-5">
-                    <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">歷史診斷報表</div>
-                    <div class="bg-slate-50/50 rounded-xl px-3 py-2 border border-slate-100 h-[76px] flex flex-col justify-center overflow-hidden">
-                        {history_list}
-                    </div>
+                <!-- 5. 歷史診斷報表 (折疊抽屜，預設收合) -->
+                <div class="mb-4">
+                    <details class="group bg-slate-50/60 rounded-xl border border-slate-200/80 overflow-hidden transition-all">
+                        <summary class="flex items-center justify-between px-3 py-2 text-[11px] font-bold text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100/80 select-none list-none">
+                            <span class="flex items-center gap-1.5">
+                                <span>📂 歷史診斷存根</span>
+                                <span class="text-[10px] font-mono font-normal text-slate-400">({len(s['history'])} 份)</span>
+                            </span>
+                            <span class="text-slate-400 text-xs transition-transform duration-200 group-open:rotate-180">▾</span>
+                        </summary>
+                        <div class="px-3 pb-2 pt-1 border-t border-slate-100">
+                            {history_list}
+                        </div>
+                    </details>
                 </div>
             </div>
 
-            <!-- 6. 卡片底端動作按鈕 (統一 2x2 網格，高低一致) -->
-            <div class="pt-4 border-t border-slate-100 grid grid-cols-2 gap-2">
-                {btn_col1}
-                {btn_col2}
-                {btn_col3}
-                {btn_col4}
+            <!-- 6. 卡片底端主力動作按鈕 (1:1 雙主力按鈕，乾淨大器) -->
+            <div class="pt-4 border-t border-slate-100 grid grid-cols-2 gap-2.5">
+                {primary_btn}
+                {secondary_btn}
             </div>
         </div>
         '''

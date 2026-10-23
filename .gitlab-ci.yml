@@ -1,0 +1,33 @@
+stages:
+  - test
+  - security
+
+# 1. 單元與整合測試
+unit_tests:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install -r requirements.txt
+    - pytest tests/ -v --ignore=repos/
+
+# 2. Python 依賴套件 CVE 安全漏洞掃描 (pip-audit)
+security_cve_audit:
+  stage: security
+  image: python:3.11-slim
+  script:
+    - pip install pip-audit
+    - echo "🔍 正在檢查 requirements.txt 依賴套件已知 CVE 漏洞..."
+    - pip-audit -r requirements.txt
+  allow_failure: true
+
+# 3. 專案原始碼與容器靜態資安掃描 (Trivy)
+trivy_security_scan:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - echo "🛡️ 正在執行 Trivy 全域漏洞與資安弱點掃描 (掃描 HIGH, CRITICAL 等級)..."
+    - trivy fs --scanners vuln,secret,config --severity HIGH,CRITICAL --exit-code 0 .
+  allow_failure: true
+
