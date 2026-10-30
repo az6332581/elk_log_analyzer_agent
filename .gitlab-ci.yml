@@ -1,33 +1,113 @@
-stages:
-  - test
-  - security
+# ==============================================================================
+# SRE Sentinel AI Agent - GitLab CI/CD Pipeline
+# 包含：代碼靜態檢查 (Lint/SAST) + 單元測試 + CVE 弱點掃描 + 軟體物料清單 (SBOM)
+# ==============================================================================
 
-# 1. 單元與整合測試
-unit_tests:
+stages:
+  - lint-sast      # 代碼靜態檢查與語法驗證
+  - test           # 單元測試 (Unit Test)
+  - cve-scan       # 依賴套件 & 檔案系統 CVE 弱點掃描
+  - sbom-generate  # 軟體物料清單 (SBOM) 產出 (CycloneDX / SPDX)
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+# ------------------------------------------------------------------------------
+# Stage 1: 代碼靜態檢查 (Lint & SAST)
+# ------------------------------------------------------------------------------
+lint:flake8:
+  stage: lint-sast
+  image: python:3.11-slim
+  before_script:
+    - pip install flake8
+  script:
+    - echo "🔍 正在執行 Python 代碼風格與語法檢查 (Flake8)..."
+    - flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.git,__pycache__,repos
+    - flake8 . --count --exit-zero --max-complexity=15 --max-line-length=127 --statistics --exclude=.git,__pycache__,repos
+
+sast:bandit:
+  stage: lint-sast
+  image: python:3.11-slim
+  before_script:
+    - pip install bandit
+  script:
+    - echo "🛡️ 正在執行 Python SAST 安全弱點掃描 (Bandit)..."
+    - bandit -r . -f json -o bandit-report.json --exclude ./tests,./repos || true
+    - bandit -r . -ll --exclude ./tests,./repos
+  artifacts:
+    name: "sast-bandit-report-$CI_COMMIT_SHORT_SHA"
+    when: always
+    paths:
+      - bandit-report.json
+
+# ------------------------------------------------------------------------------
+# Stage 2: 單元測試 (Unit Test)
+# ------------------------------------------------------------------------------
+test:unit:
   stage: test
   image: python:3.11-slim
-  script:
+  before_script:
     - pip install -r requirements.txt
+  script:
+    - echo "🧪 正在執行 SRE Sentinel 5 大核心單元測試 (pytest)..."
     - pytest tests/ -v --ignore=repos/
 
-# 2. Python 依賴套件 CVE 安全漏洞掃描 (pip-audit)
-security_cve_audit:
-  stage: security
+# ------------------------------------------------------------------------------
+# Stage 3: CVE 弱點掃描 (套件漏洞 + Trivy 掃描)
+# ------------------------------------------------------------------------------
+cve:pip-audit:
+  stage: cve-scan
   image: python:3.11-slim
-  script:
+  before_script:
     - pip install pip-audit
-    - echo "🔍 正在檢查 requirements.txt 依賴套件已知 CVE 漏洞..."
-    - pip-audit -r requirements.txt
-  allow_failure: true
+  script:
+    - echo "🔍 檢查 Python requirements.txt 套件已知 CVE 漏洞..."
+    - pip-audit -r requirements.txt || true
 
-# 3. 專案原始碼與容器靜態資安掃描 (Trivy)
-trivy_security_scan:
-  stage: security
+cve:trivy:
+  stage: cve-scan
   image:
     name: aquasec/trivy:latest
     entrypoint: [""]
   script:
-    - echo "🛡️ 正在執行 Trivy 全域漏洞與資安弱點掃描 (掃描 HIGH, CRITICAL 等級)..."
-    - trivy fs --scanners vuln,secret,config --severity HIGH,CRITICAL --exit-code 0 .
-  allow_failure: true
+    - echo "🔍 使用 Trivy 掃描專案檔案系統與 Dockerfile 設定檔..."
+    - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --skip-dirs repos --format table .
+    - trivy fs --scanners vuln,secret,misconfig --skip-dirs repos --format json --output trivy-report.json .
+  artifacts:
+    name: "cve-trivy-report-$CI_COMMIT_SHORT_SHA"
+    when: always
+    paths:
+      - trivy-report.json
 
+# ------------------------------------------------------------------------------
+# Stage 4: SBOM 軟體物料清單產出 (CycloneDX & SPDX)
+# ------------------------------------------------------------------------------
+sbom:cyclonedx:
+  stage: sbom-generate
+  image: python:3.11-slim
+  before_script:
+    - pip install cyclonedx-bom
+  script:
+    - echo "📦 正在生成專案 CycloneDX SBOM..."
+    - cyclonedx-py requirements -i requirements.txt -o sbom-project-cyclonedx.json
+  artifacts:
+    name: "sbom-cyclonedx-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - sbom-project-cyclonedx.json
+
+sbom:spdx:
+  stage: sbom-generate
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - echo "📦 正在使用 Trivy 產出全專案之 SPDX SBOM..."
+    - trivy fs --skip-dirs repos --format spdx-json --output sbom-project-spdx.json .
+  artifacts:
+    name: "sbom-spdx-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - sbom-project-spdx.json
