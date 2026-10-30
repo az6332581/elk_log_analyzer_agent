@@ -345,10 +345,17 @@ def send_alert_notification(service_name: str, task_info: dict, report_url: str 
     # 2. 發送 Webhook (Discord / Slack 格式)
     if DISCORD_WEBHOOK_URL:
         try:
+            fix_recommendations = task_info.get("suggested_fixes") or task_info.get("strategic_recommendations") or []
+            if isinstance(fix_recommendations, list):
+                fix_plan_text = "\n".join(f"• {item}" for item in fix_recommendations[:3])
+            else:
+                fix_plan_text = str(fix_recommendations)
+            fix_desc = fix_plan_text[:200] if fix_plan_text else "請登入控制台檢視修復建議"
+
             payload = {
                 "embeds": [{
                     "title": f"🚨 [SRE Alert] {service_name} 發生嚴重異常！",
-                    "description": f"**嚴重度**：`{severity}`\n**因果分析**：{correlation[:200]}...\n**修復建議**：{fix_plan[:200]}...",
+                    "description": f"**嚴重度**：`{severity}`\n**因果分析**：{correlation[:200]}...\n**修復建議**：{fix_desc}...",
                     "color": 15746887,  # 紅色
                     "url": report_url or CHATOPS_BASE_URL,
                     "footer": {"text": "SRE AI Sentinel 自動巡檢警報"}
@@ -377,32 +384,9 @@ async def scheduled_scanner_loop():
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, main, SCAN_HOURS, None)
             print(f"⏰ [排程巡檢] 定時檢查完成，下次檢查將在 {SCAN_INTERVAL_MINUTES} 分鐘後。")
-
-            # 檢查是否為週一且尚未生成本週週報，若是則自動執行每週營運週報批次生成與推播
-            now = datetime.now()
-            current_w = get_current_week_str(now)
-            weekly_record_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports", ".last_weekly_run")
-            last_run_w = ""
-            if os.path.exists(weekly_record_file):
-                try:
-                    with open(weekly_record_file, "r", encoding="utf-8") as wf:
-                        last_run_w = wf.read().strip()
-                except Exception:
-                    pass
-            if now.weekday() == 0 and last_run_w != current_w:
-                print(f"\n📅 [週報排程] 檢測到新的一週 ({current_w}) 開始，自動啟動全域與各專案 SRE 週報生成...")
-                projects_cfg = load_projects_config()
-                for sname in projects_cfg.keys():
-                    await loop.run_in_executor(None, generate_project_weekly_report, sname, current_w, None, True)
-                await loop.run_in_executor(None, generate_global_weekly_report, current_w, None, True)
-                try:
-                    with open(weekly_record_file, "w", encoding="utf-8") as wf:
-                        wf.write(current_w)
-                except Exception:
-                    pass
-                print(f"✅ [週報排程] 第 {current_w} 週 SRE 週報已全數產出並發送通知！")
         except Exception as e:
             print(f"⚠️ [排程巡檢] 執行異常: {e}")
+        await asyncio.sleep(SCAN_INTERVAL_MINUTES * 60)
         await asyncio.sleep(SCAN_INTERVAL_MINUTES * 60)
 
 @app.on_event("startup")
@@ -1861,7 +1845,7 @@ if __name__ == "__main__":
     parser.add_argument("--index", type=str, default=None, help="指定 Elasticsearch Index (預設 logs-*)")
     parser.add_argument("--server", action="store_true", help="啟動 ChatOps / Web 儀表板伺服器")
     parser.add_argument("--port", type=int, default=DEFAULT_SERVER_PORT, help=f"伺服器監聽 Port (預設 {DEFAULT_SERVER_PORT})")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="伺服器監聽 Host (預設 0.0.0.0)")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="伺服器監聽 Host (預設 0.0.0.0)")  # nosec B104
     
     args = parser.parse_args()
     

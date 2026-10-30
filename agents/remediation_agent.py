@@ -8,6 +8,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # 優先載入根目錄環境變數（支援在根目錄或 agents/ 目錄下執行）
+from datetime import datetime
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 load_dotenv()
@@ -208,7 +210,6 @@ def save_case_to_knowledge_base(issue_iid: str, file_name: str, suggested_fix: s
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     case_file = os.path.join(case_dir, f"case_{date_str}_issue_{issue_iid}.json")
     try:
-        from datetime import datetime
         with open(case_file, "w", encoding="utf-8") as f:
             json.dump({
                 "issue_iid": issue_iid,
